@@ -1,0 +1,58 @@
+{
+  "env_id": "LunarLander-v3",
+  "env_slug": "lunarlander",
+  "mode": "partial",
+  "run_name": "lunarlander_partial_only_400k_seed1",
+  "variant": "partial_only",
+  "requested_timesteps": 400000,
+  "actual_timesteps": 409600,
+  "seed": 1,
+  "n_envs": 8,
+  "initial_timesteps": 0,
+  "policy_timesteps_per_round": null,
+  "final_policy_timesteps": 0,
+  "policy_learning_kwargs": {},
+  "synthetic_queries": 0,
+  "query_budget": 0,
+  "fragment_length": null,
+  "active_learning": null,
+  "reward_hidden_sizes": [
+    200
+  ],
+  "reward_model_lr": null,
+  "pretrain_reward_model": null,
+  "pretrain_target": null,
+  "include_partial_feature": null,
+  "partial_reference": "lunar_lander_full",
+  "partial_keys": [
+    "lunar_lander_full"
+  ],
+  "component_keys": [
+    "shaping_delta",
+    "main_engine_penalty",
+    "side_engine_penalty",
+    "terminal_reward"
+  ],
+  "best_logged_true_reward": 222.2238566,
+  "best_logged_timestep": 400000,
+  "selected_policy_true_reward_mean": 213.820897,
+  "selected_policy_true_reward_std": 52.03484481585513,
+  "selected_policy_components": {
+    "mean_total": 197.2008899894923,
+    "std_total": 74.72568782645439,
+    "mean_partial": 197.20089073425703,
+    "std_partial": 74.72568690394348,
+    "mean_residual": -7.447646851233003e-07,
+    "std_residual": 3.5191979192447628e-06,
+    "mean_shaping_delta": 186.63394394096073,
+    "std_shaping_delta": 27.23319289691997,
+    "mean_main_engine_penalty": -51.71999999999987,
+    "std_main_engine_penalty": 3.55015492619685,
+    "mean_side_engine_penalty": -7.712999999999999,
+    "std_side_engine_penalty": 6.303376952078974,
+    "mean_terminal_reward": 70.0,
+    "std_terminal_reward": 45.8257569495584,
+    "mean_length": 557.4,
+    "std_length": 291.5836758119357
+  }
+}

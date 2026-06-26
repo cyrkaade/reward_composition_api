@@ -1,0 +1,13 @@
+gymnasium[atari,box2d,mujoco]==1.0.0
+stable-baselines3==2.4.1
+torch>=2.2,<3
+numpy>=1.26,<2
+matplotlib>=3.10
+pandas>=2.3
+tqdm>=4.67
+rich>=14.0
+imageio>=2.37
+tensorboard>=2.16
+ale-py>=0.10
+autorom[accept-rom-license]>=0.6.1
+swig>=4.2

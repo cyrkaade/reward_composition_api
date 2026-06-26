@@ -1,0 +1,61 @@
+{
+  "env_id": "Hopper-v5",
+  "env_slug": "hopper",
+  "mode": "partial",
+  "run_name": "hopper_true_reward_200k_seed21",
+  "variant": "partial_only",
+  "requested_timesteps": 200000,
+  "actual_timesteps": 200000,
+  "preset": "auto",
+  "seed": 21,
+  "n_envs": 8,
+  "initial_timesteps": 0,
+  "policy_timesteps_per_round": null,
+  "final_policy_timesteps": 0,
+  "policy_learning_kwargs": {
+    "n_steps": 125,
+    "batch_size": 125
+  },
+  "synthetic_queries": 0,
+  "query_budget": 0,
+  "fragment_length": null,
+  "active_learning": null,
+  "reward_hidden_sizes": [
+    200
+  ],
+  "reward_model_lr": null,
+  "pretrain_reward_model": null,
+  "pretrain_target": null,
+  "include_partial_feature": null,
+  "partial_profile": "default",
+  "partial_reference": "hopper_true_reward",
+  "partial_keys": [
+    "hopper_true_reward"
+  ],
+  "partial_weights": null,
+  "component_keys": [
+    "reward_forward",
+    "reward_survive",
+    "reward_ctrl"
+  ],
+  "best_logged_true_reward": 3097.3029755,
+  "best_logged_timestep": 180000,
+  "selected_policy_true_reward_mean": 2900.3389813800004,
+  "selected_policy_true_reward_std": 515.3937765024929,
+  "selected_policy_components": {
+    "mean_total": 2818.6147084339464,
+    "std_total": 568.783687781875,
+    "mean_partial": 2818.6147084339464,
+    "std_partial": 568.783687781875,
+    "mean_residual": 0.0,
+    "std_residual": 0.0,
+    "mean_reward_forward": 1932.9137220035561,
+    "std_reward_forward": 378.09367075975143,
+    "mean_reward_survive": 887.07,
+    "std_reward_survive": 191.47763603094748,
+    "mean_reward_ctrl": -1.3690135696103858,
+    "std_reward_ctrl": 0.3095821125712803,
+    "mean_length": 887.37,
+    "std_length": 191.06489237952638
+  }
+}

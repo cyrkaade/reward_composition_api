@@ -1,0 +1,74 @@
+{
+  "env_id": "Hopper-v5",
+  "env_slug": "hopper",
+  "mode": "feedback",
+  "run_name": "hopper_vanilla_q100_200k_seed21",
+  "variant": "vanilla",
+  "requested_timesteps": 200000,
+  "actual_timesteps": 200000,
+  "preset": "auto",
+  "seed": 21,
+  "n_envs": 8,
+  "initial_timesteps": 0,
+  "policy_timesteps_per_round": 10000,
+  "final_policy_timesteps": 100000,
+  "policy_learning_kwargs": {
+    "n_steps": 125,
+    "batch_size": 125
+  },
+  "synthetic_queries": 100,
+  "query_budget": 100,
+  "fragment_length": 1,
+  "active_learning": true,
+  "reward_hidden_sizes": [
+    200
+  ],
+  "reward_model_lr": 0.001,
+  "pretrain_reward_model": false,
+  "pretrain_target": null,
+  "include_partial_feature": false,
+  "partial_profile": "default",
+  "partial_reference": null,
+  "partial_keys": [
+    "reward_forward",
+    "reward_survive"
+  ],
+  "partial_weights": [
+    1.0,
+    1.0
+  ],
+  "component_keys": [
+    "reward_forward",
+    "reward_survive",
+    "reward_ctrl"
+  ],
+  "best_logged_true_reward": 403.06034020000004,
+  "best_logged_timestep": 200000,
+  "selected_policy_true_reward_mean": 401.84573831,
+  "selected_policy_true_reward_std": 1.5550563268158224,
+  "selected_policy_components": {
+    "mean_total": 401.6587517905605,
+    "std_total": 1.7997705474343362,
+    "mean_partial": 401.79035663118736,
+    "std_partial": 1.8002961107331856,
+    "mean_residual": -0.13160484062688851,
+    "std_residual": 0.0015901492987276276,
+    "mean_reward_forward": 269.59035663118743,
+    "std_reward_forward": 1.2784699836821702,
+    "mean_reward_survive": 132.2,
+    "std_reward_survive": 0.6164414002968975,
+    "mean_reward_ctrl": -0.13160484062688838,
+    "std_reward_ctrl": 0.0015901492987312612,
+    "mean_length": 133.2,
+    "std_length": 0.6164414002968975
+  },
+  "model_reward_min": null,
+  "model_reward_max": null,
+  "model_reward_scale": 1.0,
+  "normalize_model_reward": false,
+  "model_reward_output_mean": 6.399682998657227,
+  "model_reward_output_std": 7.071933269500732,
+  "model_reward_target_mean": 0.0,
+  "model_reward_target_std": 1.0,
+  "reward_composition": "feedback"
+}

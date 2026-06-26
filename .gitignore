@@ -1,0 +1,9 @@
+.venv/
+models/
+episode_images/
+tb_log/
+datasets/
+__pycache__
+.DS_store
+*.csv
+*.out
