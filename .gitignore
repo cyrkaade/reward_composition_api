@@ -3,6 +3,7 @@ models/
 episode_images/
 tb_log/
 datasets/
+logs/
 __pycache__
 .DS_store
 *.csv
