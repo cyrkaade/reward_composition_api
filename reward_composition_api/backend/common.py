@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import csv
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -39,6 +40,43 @@ class SaveVecNormalizeOnBest(BaseCallback):
         self.save_path.parent.mkdir(exist_ok=True, parents=True)
         self.env.save(self.save_path)
         return True
+
+
+@dataclass(frozen=True)
+class BackendRunPaths:
+    run_dir: Path
+
+    @property
+    def final_model(self) -> Path:
+        return self.run_dir / "final_model"
+
+    @property
+    def vecnormalize(self) -> Path:
+        return self.run_dir / "vecnormalize.pkl"
+
+    @property
+    def eval_log(self) -> Path:
+        return self.run_dir / "eval" / "evaluations.npz"
+
+    @property
+    def true_reward_curve(self) -> Path:
+        return self.run_dir / "true_reward_curve.png"
+
+    @property
+    def final_component_evaluation(self) -> Path:
+        return self.run_dir / "eval" / "final_component_evaluation.csv"
+
+    @property
+    def metadata(self) -> Path:
+        return self.run_dir / "metadata.json"
+
+    @property
+    def best_model(self) -> Path:
+        return self.run_dir / "best_model" / "best_model.zip"
+
+    @property
+    def best_vecnormalize(self) -> Path:
+        return self.run_dir / "best_model" / "best_vecnormalize.pkl"
 
 
 class ComponentEvalCallback(BaseCallback):
@@ -553,13 +591,12 @@ def select_final_policy(
     load_policy_fn,
     load_best_stats: bool,
 ):
-    best_model_path = run_dir / "best_model" / "best_model.zip"
-    best_stats_path = run_dir / "best_model" / "best_vecnormalize.pkl"
+    paths = BackendRunPaths(run_dir)
     final_policy = model
     final_eval_env = eval_env
-    if config.final_policy == "best" and best_model_path.exists():
-        if load_best_stats and best_stats_path.exists():
+    if config.final_policy == "best" and paths.best_model.exists():
+        if load_best_stats and paths.best_vecnormalize.exists():
             final_eval_env.close()
-            final_eval_env = load_eval_env_fn(config.env_id, best_stats_path)
-        final_policy = load_policy_fn(best_model_path, env=final_eval_env, device=config.device)
+            final_eval_env = load_eval_env_fn(config.env_id, paths.best_vecnormalize)
+        final_policy = load_policy_fn(paths.best_model, env=final_eval_env, device=config.device)
     return final_policy, final_eval_env

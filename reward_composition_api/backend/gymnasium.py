@@ -24,6 +24,7 @@ from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
 
 from .common import (
+    BackendRunPaths,
     ComponentEvalCallback,
     SaveVecNormalizeOnBest,
     choose_query_pairs,
@@ -539,20 +540,17 @@ def save_and_report(
     runtime: GymLearnedRewardRuntime | None = None,
     custom_partial: PartialSpec | None = None,
 ) -> RunResult:
-    model_path = run_dir / "final_model"
-    stats_path = run_dir / "vecnormalize.pkl"
-    model.save(model_path)
+    paths = BackendRunPaths(run_dir)
+    model.save(paths.final_model)
     vecnormalize_path = None
     if isinstance(train_env, VecNormalize):
-        train_env.save(stats_path)
-        vecnormalize_path = stats_path
+        train_env.save(paths.vecnormalize)
+        vecnormalize_path = paths.vecnormalize
 
-    eval_log_path = run_dir / "eval" / "evaluations.npz"
-    plot_path = run_dir / "true_reward_curve.png"
     actual_timesteps = int(model.num_timesteps)
     best_logged_reward, best_logged_timestep = report_eval_curve(
-        eval_log_path,
-        plot_path,
+        paths.eval_log,
+        paths.true_reward_curve,
         max(config.timesteps, actual_timesteps),
         config.plot_mode,
         config.smooth_window,
@@ -568,7 +566,7 @@ def save_and_report(
         n_eval_episodes=config.final_eval_episodes,
         seed=config.seed + 50_000,
     )
-    write_gym_component_summary(run_dir / "eval" / "final_component_evaluation.csv", actual_timesteps, final_stats, custom_partial)
+    write_gym_component_summary(paths.final_component_evaluation, actual_timesteps, final_stats, custom_partial)
 
     final_policy, final_eval_env = select_final_policy(
         config,
@@ -643,7 +641,7 @@ def save_and_report(
             }
         )
 
-    metadata_path = run_dir / "metadata.json"
+    metadata_path = paths.metadata
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     print(f"{config.final_policy.title()} deterministic true reward: {mean_reward:.3f} +/- {std_reward:.3f}")
@@ -661,7 +659,7 @@ def save_and_report(
     return RunResult(
         run_dir=run_dir,
         metadata_path=metadata_path,
-        model_path=model_path.with_suffix(".zip"),
+        model_path=paths.final_model.with_suffix(".zip"),
         vecnormalize_path=vecnormalize_path,
         synthetic_queries=synthetic_queries,
         metadata=metadata,
