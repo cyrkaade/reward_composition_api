@@ -189,6 +189,25 @@ class RewardCompositionApiTest(unittest.TestCase):
         self.assertIn("1400", planned[0].command)
         self.assertEqual(query_schedule(1400, 5), [280, 280, 280, 280, 280])
 
+    def test_sweep_command_includes_reward_ensemble_knobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            planned = plan_sweep(
+                SweepConfig(
+                    suite="mujoco",
+                    env_ids=("Reacher-v5",),
+                    seeds=(2,),
+                    log_dir=Path(tmp),
+                    reward_model_ensemble_size=5,
+                    active_query_strategy="ensemble",
+                )
+            )
+
+        command = planned[0].command
+        self.assertIn("--reward-model-ensemble-size", command)
+        self.assertIn("5", command)
+        self.assertIn("--active-query-strategy", command)
+        self.assertIn("ensemble", command)
+
     def test_lunar_lander_defaults_match_legacy_fragment_settings(self):
         config = normalize_experiment_config(
             ExperimentConfig(
@@ -216,6 +235,8 @@ class RewardCompositionApiTest(unittest.TestCase):
                         "requested_timesteps": 10,
                         "actual_timesteps": 10,
                         "synthetic_queries": 0,
+                        "active_query_strategy": "ensemble",
+                        "reward_model_ensemble_size": 5,
                         "selected_policy_true_reward_mean": 1.5,
                         "selected_policy_true_reward_std": 0.1,
                         "selected_policy_components": {"mean_partial": 1.0, "mean_residual": 0.5},
@@ -238,6 +259,8 @@ class RewardCompositionApiTest(unittest.TestCase):
 
         self.assertEqual(len(result.rows), 1)
         self.assertEqual(result.aggregate_rows[0]["mean_selected_true_reward"], 1.5)
+        self.assertEqual(result.rows[0]["active_query_strategy"], "ensemble")
+        self.assertEqual(result.rows[0]["reward_model_ensemble_size"], 5)
         self.assertTrue(summary_exists)
         self.assertTrue(aggregate_exists)
 

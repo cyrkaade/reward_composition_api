@@ -62,4 +62,6 @@ Method aliases: `true`, `partial`, `vanilla`, `feedback`, `naive`, `delta`.
 .\.venv\Scripts\python.exe -m reward_composition_api summarize --suite mujoco --root logs/mujoco_ablations
 ```
 
+For k-fold reward ensembles, opt in on RLHF-style modes with `--reward-model-ensemble-size 5`. With the default `--active-query-strategy auto`, active learning uses ensemble variance when the ensemble size is greater than one, and keeps the legacy MC-dropout querying when the size is one. Use `--active-query-strategy ensemble` to require ensemble querying explicitly.
+
 Run outputs are written under `logs/<experiment-name>/...` and include `metadata.json`, monitor CSVs, eval curves, `true_reward_curve.png`, and saved policies.
