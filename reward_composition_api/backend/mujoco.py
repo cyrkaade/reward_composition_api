@@ -25,6 +25,7 @@ from reward_composition_api.results import RunResult
 from .common import (
     BackendRunPaths,
     ComponentEvalCallback,
+    RlhfTrainer,
     SaveVecNormalizeOnBest,
     include_partial_feature,
     learn_policy,
@@ -33,7 +34,6 @@ from .common import (
     normalize_obs,
     report_eval_curve,
     resolve_custom_partial,
-    run_preference_training_loop,
     select_final_policy,
     summarize_component_rows,
     write_component_summary_csv,
@@ -395,7 +395,7 @@ def train_preference_mode(config: ExperimentConfig, spec: MuJoCoRewardSpec, cust
 
     reward_model = RewardModel(input_size=input_size, hidden_sizes=config.reward_hidden_sizes)
     convert_traj = make_trajectory_converter(runtime.include_partial_feature)
-    total_queries = run_preference_training_loop(
+    total_queries = RlhfTrainer(
         config,
         model,
         runtime,
@@ -413,7 +413,7 @@ def train_preference_mode(config: ExperimentConfig, spec: MuJoCoRewardSpec, cust
         ),
         continuous=True,
         collection_label="steps",
-    )
+    ).run()
 
     return save_and_report(
         config,

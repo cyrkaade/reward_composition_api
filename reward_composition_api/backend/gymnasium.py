@@ -26,6 +26,7 @@ from reward_composition_api.results import RunResult
 from .common import (
     BackendRunPaths,
     ComponentEvalCallback,
+    RlhfTrainer,
     SaveVecNormalizeOnBest,
     include_partial_feature,
     learn_policy,
@@ -33,7 +34,6 @@ from .common import (
     make_raw_eval_env as make_common_raw_eval_env,
     report_eval_curve,
     resolve_custom_partial,
-    run_preference_training_loop,
     select_final_policy,
     summarize_component_rows,
     write_component_summary_csv,
@@ -401,7 +401,7 @@ def train_preference_mode(config: ExperimentConfig, custom_partial: PartialSpec 
 
     reward_model = RewardModel(input_size=reward_model_input_size, hidden_sizes=config.reward_hidden_sizes)
     convert_traj = make_trajectory_converter(observation_space, action_space, runtime.include_partial_feature)
-    total_queries = run_preference_training_loop(
+    total_queries = RlhfTrainer(
         config,
         model,
         runtime,
@@ -418,7 +418,7 @@ def train_preference_mode(config: ExperimentConfig, custom_partial: PartialSpec 
         ),
         continuous=not isinstance(action_space, spaces.Discrete),
         collection_label="Gym steps",
-    )
+    ).run()
 
     return save_and_report(
         config,
