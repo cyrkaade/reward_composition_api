@@ -59,7 +59,7 @@ def evaluate_mujoco_components(
         env.close()
 
     keys = ["total", "partial", "residual", *_component_keys(spec, custom_partial), "length"]
-    return _summarize_rows(rows, keys)
+    return summarize_component_rows(rows, keys)
 
 
 def _empty_accumulators(spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None) -> dict[str, float]:
@@ -72,10 +72,6 @@ def _component_keys(spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None) 
     if custom_partial is not None:
         return custom_partial.component_keys
     return spec.component_keys
-
-
-def _summarize_rows(rows: list[dict[str, float]], keys: list[str]) -> dict[str, float]:
-    return summarize_component_rows(rows, keys)
 
 
 def component_fieldnames(spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None = None) -> list[str]:

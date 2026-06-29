@@ -60,11 +60,7 @@ def evaluate_gym_components(
     finally:
         env.close()
 
-    return _summarize_rows(rows, ["total", "partial", "residual", *component_keys(custom_partial), "length"])
-
-
-def _summarize_rows(rows: list[dict[str, float]], keys: list[str]) -> dict[str, float]:
-    return summarize_component_rows(rows, keys)
+    return summarize_component_rows(rows, ["total", "partial", "residual", *component_keys(custom_partial), "length"])
 
 
 def component_keys(custom_partial: PartialSpec | None = None) -> tuple[str, ...]:

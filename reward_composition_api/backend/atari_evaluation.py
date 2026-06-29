@@ -72,11 +72,7 @@ def evaluate_atari_components(
     finally:
         env.close()
 
-    return _summarize_rows(rows, component_keys(custom_partial))
-
-
-def _summarize_rows(rows: list[dict[str, float]], keys: list[str]) -> dict[str, float]:
-    return summarize_component_rows(rows, keys)
+    return summarize_component_rows(rows, component_keys(custom_partial))
 
 
 def _component_keys(custom_partial: PartialSpec | None) -> tuple[str, ...]:
