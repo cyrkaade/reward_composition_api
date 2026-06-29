@@ -24,8 +24,6 @@ from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
 
 from .common import (
-    BackendRunPaths,
-    ComponentEvalCallback,
     RlhfTrainer,
     SaveVecNormalizeOnBest,
     include_partial_feature,
@@ -33,10 +31,14 @@ from .common import (
     load_vecnormalize_eval_env,
     make_raw_eval_env as make_common_raw_eval_env,
     normalize_obs,
-    report_eval_curve,
     resolve_custom_partial,
-    select_final_policy,
     summarize_component_rows,
+)
+from .reporting import (
+    BackendRunPaths,
+    ComponentEvalCallback,
+    report_eval_curve,
+    select_final_policy,
     write_component_summary_csv,
 )
 
