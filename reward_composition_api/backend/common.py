@@ -152,9 +152,63 @@ def dropout_active_learning_pairs(
     return [(fragments[i], fragments[j]) for (i, j), _ in ranked[:query_count]]
 
 
+def ensemble_active_learning_pairs(
+    fragments: list[Trajectory],
+    reward_models: list[RewardModel],
+    query_count: int,
+    convert_traj: Callable[[Trajectory], list[list[float]]],
+    add_partial_to_predictions: bool,
+    n_batches: int,
+) -> list[tuple[Trajectory, Trajectory]]:
+    if len(fragments) < 2 or not reward_models:
+        return []
+
+    fragment_tensor = th.as_tensor([convert_traj(fragment) for fragment in fragments], dtype=th.float32)
+    partial_returns = [sum(state["partial_rew"] for state in fragment.states) for fragment in fragments]
+
+    pred_returns = []
+    with th.no_grad():
+        for model in reward_models:
+            returns = th.sum(model(fragment_tensor), dim=[1, 2]).detach().cpu().numpy().tolist()
+            if add_partial_to_predictions:
+                returns = [model_return + partial for model_return, partial in zip(returns, partial_returns)]
+            pred_returns.append(returns)
+
+    possible_indices = list(range(len(fragments)))
+    best_indices_batch = None
+    best_vars = None
+    best_score = -float("inf")
+
+    for _ in range(n_batches):
+        random.shuffle(possible_indices)
+        indices_batch = list(zip(possible_indices[::2], possible_indices[1::2]))
+        if not indices_batch:
+            continue
+        pair_returns = th.as_tensor(
+            [
+                [(pred_returns[model_idx][i], pred_returns[model_idx][j]) for i, j in indices_batch]
+                for model_idx in range(len(reward_models))
+            ],
+            dtype=th.float32,
+        )
+        pred_preferences = preference_prob(pair_returns, 2)
+        variances = th.sum(th.var(pred_preferences, dim=0), dim=1).detach().cpu().numpy()
+        score = float(np.sum(variances))
+        if score > best_score:
+            best_score = score
+            best_indices_batch = indices_batch
+            best_vars = variances
+
+    if best_indices_batch is None or best_vars is None:
+        return random_query_pairs(fragments, query_count)
+
+    ranked = sorted(zip(best_indices_batch, best_vars), key=lambda item: item[1], reverse=True)
+    return [(fragments[i], fragments[j]) for (i, j), _ in ranked[:query_count]]
+
+
 def choose_query_pairs(
     trajectories: list[Trajectory],
-    reward_model: RewardModel | None,
+    reward_model: RewardModel | list[RewardModel] | None,
     query_count: int,
     fragment_length: int,
     active_learning: bool,
@@ -164,15 +218,30 @@ def choose_query_pairs(
     dropout_p: float,
     active_learning_batches: int,
     continuous: bool,
+    active_query_strategy: str = "auto",
 ) -> list[tuple[Trajectory, Trajectory]]:
     fragments = fragment_trajectories(trajectories, fragment_length, continuous=continuous)
     if len(fragments) < 2 or query_count <= 0:
         return []
     if reward_model is None or not active_learning:
         return random_query_pairs(fragments, query_count)
+
+    reward_models = reward_model if isinstance(reward_model, list) else [reward_model]
+    if active_query_strategy == "auto":
+        active_query_strategy = "ensemble" if len(reward_models) > 1 else "dropout"
+    if active_query_strategy == "ensemble" and len(reward_models) > 1:
+        return ensemble_active_learning_pairs(
+            fragments,
+            reward_models,
+            query_count,
+            convert_traj,
+            add_partial_to_predictions,
+            active_learning_batches,
+        )
+
     return dropout_active_learning_pairs(
         fragments,
-        reward_model,
+        reward_models[0],
         query_count,
         convert_traj,
         add_partial_to_predictions,
