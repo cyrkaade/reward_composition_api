@@ -6,7 +6,6 @@ from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
-import torch as th
 from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
@@ -26,10 +25,11 @@ from .gym_spaces import (
     observation_features,
     policy_observation,
 )
+from .learned_rewards import BaseLearnedRewardRuntime, BasePreferenceRewardWrapper
 
 
 @dataclass
-class GymLearnedRewardRuntime:
+class GymLearnedRewardRuntime(BaseLearnedRewardRuntime):
     env_id: str
     composition: str
     observation_space: spaces.Space
@@ -47,84 +47,31 @@ class GymLearnedRewardRuntime:
     include_partial_feature: bool = True
 
 
-class GymPreferenceRewardWrapper(gym.Wrapper):
+class GymPreferenceRewardWrapper(BasePreferenceRewardWrapper):
     def __init__(self, env, runtime: GymLearnedRewardRuntime):
-        super().__init__(env)
-        self.runtime = runtime
+        super().__init__(env, runtime)
         self.partial = runtime.custom_partial.create(runtime.env_id) if runtime.custom_partial else None
-        self._last_obs = None
 
-    def reset(self, **kwargs):
-        observation, info = self.env.reset(**kwargs)
-        self._last_obs = observation
+    def reset_reward_state(self, info: dict) -> dict:
         if self.partial is not None:
             self.partial.reset(info)
-        return observation, info
+        return {}
 
-    def _partial_reward(self, previous_obs, action, observation, true_reward, terminated, truncated, info):
+    def partial_reward(self, previous_obs, action, observation, true_reward, terminated, truncated, info):
         if self.partial is None:
             return 0.0, {}
         step = self.partial.step(previous_obs, action, observation, true_reward, terminated, truncated, info)
         return step.partial, step.components
 
-    def _model_reward(self, observation, action, partial_reward):
-        if self.runtime.reward_model is None:
-            return 0.0
-
+    def model_features(self, observation, action, partial_reward: float) -> np.ndarray:
         partial_feature = partial_reward if self.runtime.include_partial_feature else 0.0
-        model_input = np.concatenate(
+        return np.concatenate(
             [
                 observation_features(self.runtime.observation_space, observation),
                 action_features(self.runtime.action_space, action),
                 np.asarray([partial_feature], dtype=np.float32),
             ]
         )
-        with th.no_grad():
-            output = self.runtime.reward_model(th.as_tensor(model_input, dtype=th.float32).view(1, -1)).reshape(-1)[0]
-
-        value = float(output.item())
-        if self.runtime.normalize and self.runtime.output_mean is not None and self.runtime.output_std is not None:
-            value = (
-                (value - self.runtime.output_mean)
-                / max(self.runtime.output_std, 1e-8)
-                * self.runtime.target_std
-                + self.runtime.target_mean
-            )
-        value *= self.runtime.reward_scale
-        if self.runtime.reward_min is not None or self.runtime.reward_max is not None:
-            value = float(np.clip(value, self.runtime.reward_min, self.runtime.reward_max))
-        return value
-
-    def step(self, action):
-        previous_obs = self._last_obs
-        observation, true_reward, terminated, truncated, info = self.env.step(action)
-        partial_reward, partial_components = self._partial_reward(
-            previous_obs,
-            action,
-            observation,
-            true_reward,
-            terminated,
-            truncated,
-            info,
-        )
-        model_reward = self._model_reward(observation, action, partial_reward)
-
-        if self.runtime.composition == "partial":
-            training_reward = partial_reward
-        elif self.runtime.composition == "feedback":
-            training_reward = model_reward
-        elif self.runtime.composition in {"naive", "delta"}:
-            training_reward = partial_reward + model_reward
-        else:
-            raise ValueError(f"Unsupported reward composition: {self.runtime.composition}")
-
-        info["true_reward"] = float(true_reward)
-        info["partial_reward"] = partial_reward
-        info["partial_components"] = partial_components
-        info["model_reward"] = model_reward
-        info["learned_reward"] = training_reward
-        self._last_obs = observation
-        return observation, training_reward, terminated, truncated, info
 
 
 def make_raw_env(env_id: str):

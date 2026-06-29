@@ -6,7 +6,6 @@ from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
-import torch as th
 import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
@@ -19,6 +18,7 @@ from reward_composition_api.registry import PartialSpec
 from reward_model.reward_model import RewardModel
 
 from .common import load_vecnormalize_eval_env, make_raw_eval_env as make_common_raw_eval_env, normalize_obs
+from .learned_rewards import BaseLearnedRewardRuntime, BasePreferenceRewardWrapper
 
 
 GENERIC_ATARI_RAM_PPO_PRESET = {
@@ -41,7 +41,7 @@ GENERIC_ATARI_RAM_PPO_PRESET = {
 
 
 @dataclass
-class AtariLearnedRewardRuntime:
+class AtariLearnedRewardRuntime(BaseLearnedRewardRuntime):
     spec: AtariRewardSpec
     composition: str
     action_n: int
@@ -59,26 +59,22 @@ class AtariLearnedRewardRuntime:
     include_partial_feature: bool = True
 
 
-class AtariPreferenceRewardWrapper(gym.Wrapper):
+class AtariPreferenceRewardWrapper(BasePreferenceRewardWrapper):
     def __init__(self, env, runtime: AtariLearnedRewardRuntime):
-        super().__init__(env)
-        self.runtime = runtime
+        super().__init__(env, runtime)
         self.tracker = runtime.spec.new_tracker()
         self.partial = runtime.custom_partial.create(runtime.spec.env_id) if runtime.custom_partial else None
-        self._last_obs = None
 
-    def reset(self, **kwargs):
-        observation, info = self.env.reset(**kwargs)
-        self._last_obs = observation
+    def reset_reward_state(self, info: dict) -> dict:
         step = self.tracker.reset(info)
         if self.partial is not None:
             self.partial.reset(info)
-        info.update(step.as_info())
-        info["model_reward"] = 0.0
-        info["learned_reward"] = 0.0
-        return observation, info
+        reset_info = step.as_info()
+        reset_info["model_reward"] = 0.0
+        reset_info["learned_reward"] = 0.0
+        return reset_info
 
-    def _partial_reward(self, previous_obs, action, observation, true_reward, terminated, truncated, info):
+    def partial_reward(self, previous_obs, action, observation, true_reward, terminated, truncated, info):
         if self.partial is not None:
             step = self.partial.step(previous_obs, action, observation, true_reward, terminated, truncated, info)
             return step.partial, step.components
@@ -91,64 +87,18 @@ class AtariPreferenceRewardWrapper(gym.Wrapper):
             "lives": step.lives,
         }
 
-    def _model_reward(self, observation, action, partial_reward):
-        if self.runtime.reward_model is None:
-            return 0.0
-
+    def model_features(self, observation, action, partial_reward: float) -> np.ndarray:
         partial_feature = partial_reward if self.runtime.include_partial_feature else 0.0
-        model_input = np.concatenate(
+        return np.concatenate(
             [
                 atari_observation_features(observation),
                 one_hot_action(action, self.runtime.action_n),
                 np.asarray([partial_feature], dtype=np.float32),
             ]
         )
-        with th.no_grad():
-            output = self.runtime.reward_model(th.as_tensor(model_input, dtype=th.float32).view(1, -1)).reshape(-1)[0]
 
-        value = float(output.item())
-        if self.runtime.normalize and self.runtime.output_mean is not None and self.runtime.output_std is not None:
-            value = (
-                (value - self.runtime.output_mean)
-                / max(self.runtime.output_std, 1e-8)
-                * self.runtime.target_std
-                + self.runtime.target_mean
-            )
-        value *= self.runtime.reward_scale
-        if self.runtime.reward_min is not None or self.runtime.reward_max is not None:
-            value = float(np.clip(value, self.runtime.reward_min, self.runtime.reward_max))
-        return value
-
-    def step(self, action):
-        previous_obs = self._last_obs
-        observation, true_reward, terminated, truncated, info = self.env.step(action)
-        partial_reward, partial_components = self._partial_reward(
-            previous_obs,
-            action,
-            observation,
-            true_reward,
-            terminated,
-            truncated,
-            info,
-        )
-        model_reward = self._model_reward(observation, action, partial_reward)
-
-        if self.runtime.composition == "partial":
-            training_reward = partial_reward
-        elif self.runtime.composition == "feedback":
-            training_reward = model_reward
-        elif self.runtime.composition in {"naive", "delta"}:
-            training_reward = partial_reward + model_reward
-        else:
-            raise ValueError(f"Unsupported Atari reward composition: {self.runtime.composition}")
-
-        info["true_reward"] = float(true_reward)
-        info["partial_reward"] = partial_reward
-        info["partial_components"] = partial_components
-        info["model_reward"] = model_reward
-        info["learned_reward"] = training_reward
-        self._last_obs = observation
-        return observation, training_reward, terminated, truncated, info
+    def unsupported_composition_message(self) -> str:
+        return f"Unsupported Atari reward composition: {self.runtime.composition}"
 
 
 class AtariFireResetEnv(gym.Wrapper):
