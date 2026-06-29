@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import csv
 from copy import deepcopy
 from pathlib import Path
 from typing import Callable
@@ -78,6 +79,18 @@ def summarize_component_rows(rows: list[dict[str, float]], keys: list[str]) -> d
         stats[f"mean_{key}"] = float(values.mean())
         stats[f"std_{key}"] = float(values.std())
     return stats
+
+
+def write_component_summary_csv(path: Path, timestep: int, stats: dict, fieldnames: list[str]) -> None:
+    path.parent.mkdir(exist_ok=True, parents=True)
+    new_file = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if new_file:
+            writer.writeheader()
+        row = {"timesteps": timestep}
+        row.update({field: stats.get(field, "") for field in fieldnames if field != "timesteps"})
+        writer.writerow(row)
 
 
 def rate_pairs_from_true_reward(pairs: list[tuple[Trajectory, Trajectory]]) -> list[Preference]:

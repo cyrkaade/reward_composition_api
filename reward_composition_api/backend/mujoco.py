@@ -41,6 +41,7 @@ from .common import (
     reward_model_io_stats,
     summarize_component_rows,
     train_preference_reward_model,
+    write_component_summary_csv,
 )
 
 
@@ -763,16 +764,7 @@ def write_mujoco_component_summary(
     stats: dict,
     custom_partial: PartialSpec | None = None,
 ):
-    path.parent.mkdir(exist_ok=True, parents=True)
-    fieldnames = component_fieldnames(spec, custom_partial)
-    new_file = not path.exists()
-    with path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if new_file:
-            writer.writeheader()
-        row = {"timesteps": timestep}
-        row.update({field: stats.get(field, "") for field in fieldnames if field != "timesteps"})
-        writer.writerow(row)
+    write_component_summary_csv(path, timestep, stats, component_fieldnames(spec, custom_partial))
 
 
 class MuJoCoComponentEvalCallback(BaseCallback):
