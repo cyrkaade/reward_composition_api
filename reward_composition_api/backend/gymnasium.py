@@ -9,7 +9,7 @@ import gymnasium as gym
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from gymnasium.spaces.utils import flatdim, flatten
+from gymnasium.spaces.utils import flatdim
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalCallback, StopTrainingOnRewardThreshold
 from stable_baselines3.common.env_util import make_vec_env
@@ -31,6 +31,14 @@ from .common import (
     make_raw_eval_env as make_common_raw_eval_env,
     resolve_custom_partial,
     summarize_component_rows,
+)
+from .gym_spaces import (
+    action_features,
+    action_for_space,
+    is_image_space,
+    observation_features,
+    policy_observation,
+    should_normalize_observation,
 )
 from .rlhf import RlhfTrainer
 from .reporting import (
@@ -162,10 +170,6 @@ def make_raw_eval_env(env_id: str):
     return make_common_raw_eval_env(make_raw_env, env_id)
 
 
-def should_normalize_observation(space: spaces.Space) -> bool:
-    return isinstance(space, spaces.Box) and len(space.shape or ()) == 1
-
-
 def make_train_env(env_fn, n_envs: int, monitor_dir: Path, normalize: bool):
     env = make_vec_env(env_fn, n_envs=n_envs, vec_env_cls=DummyVecEnv, monitor_dir=str(monitor_dir))
     if normalize:
@@ -185,30 +189,6 @@ def make_eval_env(env_id: str, stats_source=None):
 
 def load_eval_env(env_id: str, stats_path: Path):
     return load_vecnormalize_eval_env(env_id, stats_path, make_raw_eval_env)
-
-
-def policy_observation(stats_source, observation):
-    if isinstance(stats_source, VecNormalize):
-        return stats_source.normalize_obs(np.asarray(observation)[None])
-    return observation
-
-
-def observation_features(space: spaces.Space, observation) -> np.ndarray:
-    return np.asarray(flatten(space, observation), dtype=np.float32).reshape(-1)
-
-
-def action_features(space: spaces.Space, action) -> np.ndarray:
-    return np.asarray(flatten(space, action_for_space(space, action)), dtype=np.float32).reshape(-1)
-
-
-def action_for_space(space: spaces.Space, action):
-    if isinstance(space, spaces.Discrete):
-        return int(np.asarray(action).reshape(-1)[0])
-    if isinstance(space, spaces.MultiDiscrete):
-        return np.asarray(action, dtype=space.dtype).reshape(space.shape)
-    if isinstance(space, spaces.MultiBinary):
-        return np.asarray(action, dtype=space.dtype).reshape(space.shape)
-    return np.asarray(action, dtype=getattr(space, "dtype", np.float32)).reshape(space.shape)
 
 
 def make_trajectory_converter(observation_space: spaces.Space, action_space: spaces.Space, include_partial_feature: bool):
@@ -277,7 +257,7 @@ def collect_policy_trajectories(
 
 def ppo_hyperparams(env: gym.Env, config: ExperimentConfig):
     hyperparams = {
-        "policy": "CnnPolicy" if _is_image_space(env.observation_space) else "MlpPolicy",
+        "policy": "CnnPolicy" if is_image_space(env.observation_space) else "MlpPolicy",
         "n_steps": 2048,
         "batch_size": 64,
         "gamma": 0.99,
@@ -291,10 +271,6 @@ def ppo_hyperparams(env: gym.Env, config: ExperimentConfig):
     }
     hyperparams.update(deepcopy(config.policy_learning_kwargs or {}))
     return hyperparams
-
-
-def _is_image_space(space: spaces.Space) -> bool:
-    return isinstance(space, spaces.Box) and len(space.shape or ()) == 3
 
 
 def build_callbacks(config: ExperimentConfig, run_dir: Path, train_env, eval_env, custom_partial: PartialSpec | None):
