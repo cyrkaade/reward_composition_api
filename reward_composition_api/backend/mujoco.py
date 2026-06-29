@@ -14,29 +14,32 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalCallback, StopTrainingOnRewardThreshold
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec, get_mujoco_reward_spec
 from local_gym.wrappers.buffering_wrapper import Trajectory
 from reward_model.reward_model import RewardModel
 from reward_composition_api.config import ExperimentConfig
-from reward_composition_api.partials import build_builtin_registry
-from reward_composition_api.registry import PartialSpec, load_partial_reference
+from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
 
 from .common import (
     SaveVecNormalizeOnBest,
     choose_query_pairs,
+    include_partial_feature,
     learn_policy,
     load_eval_curve,
+    load_vecnormalize_eval_env,
+    make_raw_eval_env as make_common_raw_eval_env,
     normalize_obs,
     policy_training_schedule,
     plot_true_reward_curve,
     pretrain_reward_model,
     query_schedule,
     rate_pairs_from_true_reward,
+    resolve_custom_partial,
     reward_model_io_stats,
+    summarize_component_rows,
     train_preference_reward_model,
 )
 
@@ -199,7 +202,7 @@ def make_raw_env(env_id: str):
 
 
 def make_raw_eval_env(env_id: str):
-    return DummyVecEnv([lambda: Monitor(make_raw_env(env_id))])
+    return make_common_raw_eval_env(make_raw_env, env_id)
 
 
 def make_vecnormalize_env(env_fn, n_envs: int, monitor_dir: Path) -> VecNormalize:
@@ -221,10 +224,7 @@ def make_eval_env(env_id: str, stats_source: VecNormalize | None = None) -> VecN
 
 
 def load_eval_env(env_id: str, stats_path: Path) -> VecNormalize:
-    env = VecNormalize.load(stats_path, make_raw_eval_env(env_id))
-    env.training = False
-    env.norm_reward = False
-    return env
+    return load_vecnormalize_eval_env(env_id, stats_path, make_raw_eval_env)
 
 
 def make_trajectory_converter(include_partial_feature: bool):
@@ -335,12 +335,6 @@ def build_callbacks(
         verbose=1,
     )
     return CallbackList([eval_callback, component_callback])
-
-
-def include_partial_feature(config: ExperimentConfig) -> bool:
-    if config.include_partial_feature is not None:
-        return bool(config.include_partial_feature)
-    return config.mode in {"naive", "delta"}
 
 
 def train_true_or_partial(config: ExperimentConfig, spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None) -> RunResult:
@@ -751,12 +745,7 @@ def _component_keys(spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None) 
 
 
 def _summarize_rows(rows: list[dict[str, float]], keys: list[str]) -> dict[str, float]:
-    stats = {}
-    for key in keys:
-        values = np.asarray([row.get(key, 0.0) for row in rows], dtype=np.float64)
-        stats[f"mean_{key}"] = float(values.mean())
-        stats[f"std_{key}"] = float(values.std())
-    return stats
+    return summarize_component_rows(rows, keys)
 
 
 def component_fieldnames(spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None = None) -> list[str]:
@@ -847,10 +836,7 @@ def default_run_name(config: ExperimentConfig, spec: MuJoCoRewardSpec) -> str:
 
 
 def _resolve_custom_partial(config: ExperimentConfig) -> PartialSpec | None:
-    if not config.partial:
-        return None
-    registry = build_builtin_registry()
-    return load_partial_reference(config.partial, config.suite, registry)
+    return resolve_custom_partial(config)
 
 
 def _with_run_identity(config: ExperimentConfig, run_name: str, variant_name: str) -> ExperimentConfig:

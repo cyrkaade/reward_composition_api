@@ -9,10 +9,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch as th
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from torch.optim import Adam
 
 from local_gym.wrappers.buffering_wrapper import Trajectory
+from reward_composition_api.partials import build_builtin_registry
+from reward_composition_api.registry import PartialSpec, load_partial_reference
 from reward_model.preferences.fragmenter import Fragmenter
 from reward_model.preferences.preference import Preference
 from reward_model.reward_model import (
@@ -42,6 +45,39 @@ def normalize_obs(stats_source, observation):
     if isinstance(stats_source, VecNormalize):
         return stats_source.normalize_obs(observation)
     return observation
+
+
+def resolve_custom_partial(config) -> PartialSpec | None:
+    if not config.partial:
+        return None
+    registry = build_builtin_registry()
+    return load_partial_reference(config.partial, config.suite, registry)
+
+
+def include_partial_feature(config) -> bool:
+    if config.include_partial_feature is not None:
+        return bool(config.include_partial_feature)
+    return config.mode in {"naive", "delta"}
+
+
+def make_raw_eval_env(make_raw_env, env_id: str):
+    return DummyVecEnv([lambda: Monitor(make_raw_env(env_id))])
+
+
+def load_vecnormalize_eval_env(env_id: str, stats_path: Path, make_raw_eval_env_fn) -> VecNormalize:
+    env = VecNormalize.load(stats_path, make_raw_eval_env_fn(env_id))
+    env.training = False
+    env.norm_reward = False
+    return env
+
+
+def summarize_component_rows(rows: list[dict[str, float]], keys: list[str]) -> dict[str, float]:
+    stats = {}
+    for key in keys:
+        values = np.asarray([row.get(key, 0.0) for row in rows], dtype=np.float64)
+        stats[f"mean_{key}"] = float(values.mean())
+        stats[f"std_{key}"] = float(values.std())
+    return stats
 
 
 def rate_pairs_from_true_reward(pairs: list[tuple[Trajectory, Trajectory]]) -> list[Preference]:
