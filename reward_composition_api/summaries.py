@@ -5,7 +5,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from .config import ATARI_SUITE, MUJOCO_SUITE, SummaryConfig, normalize_summary_config
+from .config import ATARI_SUITE, SummaryConfig, normalize_summary_config
 from .results import SummaryResult
 
 

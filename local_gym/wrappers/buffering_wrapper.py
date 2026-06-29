@@ -1,8 +1,5 @@
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any
 
-import gymnasium as gym
-import numpy as np
-import numpy.typing as npt
 from stable_baselines3.common.vec_env import VecEnv, VecEnvWrapper
 from copy import deepcopy
 

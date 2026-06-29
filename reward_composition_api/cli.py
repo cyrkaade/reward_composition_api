@@ -8,11 +8,8 @@ import numpy as np
 from . import run_experiment, run_sweep, summarize_runs
 from .config import (
     ATARI_PARTIAL_SOURCES,
-    ATARI_SUITE,
-    BOX2D_SUITE,
     DEVICES,
     FINAL_POLICIES,
-    GYM_SUITE,
     MUJOCO_PARTIAL_PROFILES,
     MUJOCO_PRESETS,
     MUJOCO_SUITE,
