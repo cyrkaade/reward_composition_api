@@ -24,7 +24,6 @@ from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
 
 from .common import (
-    RlhfTrainer,
     SaveVecNormalizeOnBest,
     include_partial_feature,
     learn_policy,
@@ -34,6 +33,7 @@ from .common import (
     resolve_custom_partial,
     summarize_component_rows,
 )
+from .rlhf import RlhfTrainer
 from .reporting import (
     BackendRunPaths,
     ComponentEvalCallback,
