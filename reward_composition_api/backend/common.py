@@ -427,6 +427,124 @@ def train_preference_reward_model(
                 break
 
 
+def run_preference_training_loop(
+    config,
+    model,
+    runtime,
+    callbacks,
+    reward_model: RewardModel,
+    convert_traj: Callable[[Trajectory], list[list[float]]],
+    collect_trajectories: Callable[[int, int], list[Trajectory]],
+    continuous: bool,
+    collection_label: str,
+) -> int:
+    rated_train = []
+    rated_val = []
+    total_queries = 0
+    pretraining_done = False
+    schedule = query_schedule(config.query_budget, config.rlhf_rounds)
+    policy_steps_by_round = policy_training_schedule(
+        config.timesteps,
+        config.rlhf_rounds,
+        config.policy_timesteps_per_round,
+    )
+    add_partial_to_predictions = config.mode in {"naive", "delta"}
+
+    if config.initial_timesteps:
+        print(f"initial PPO training on {config.mode} reward for {config.initial_timesteps} timesteps")
+        learn_policy(
+            model,
+            config.initial_timesteps,
+            callbacks,
+            progress_bar=config.progress_bar,
+            reset_num_timesteps=False,
+            log_interval=config.policy_log_interval,
+        )
+
+    for round_index, round_query_budget in enumerate(schedule):
+        collection_steps = config.collection_timesteps * (2 if round_index == 0 else 1)
+        print(f"\nPreference round {round_index}: collecting {collection_steps} {collection_label} for {round_query_budget} queries")
+        trajectories = collect_trajectories(round_index, collection_steps)
+
+        if config.pretrain_reward_model and not pretraining_done:
+            print(f"pretraining reward model on {config.pretrain_target} target")
+            pretrain_reward_model(
+                reward_model,
+                trajectories,
+                convert_traj,
+                target=config.pretrain_target,
+                epochs=config.pretrain_epochs,
+                batch_size=config.pretrain_batch_size,
+                learning_rate=config.pretrain_lr,
+            )
+            pretraining_done = True
+
+        query_model = reward_model if (total_queries > 0 or pretraining_done) else None
+        pairs = choose_query_pairs(
+            trajectories,
+            query_model,
+            query_count=min(round_query_budget, config.query_budget - total_queries),
+            fragment_length=config.fragment_length,
+            active_learning=config.active_learning,
+            convert_traj=convert_traj,
+            add_partial_to_predictions=add_partial_to_predictions,
+            dropout_samples=config.dropout_samples,
+            dropout_p=config.dropout_p,
+            active_learning_batches=config.active_learning_batches,
+            continuous=continuous,
+        )
+        rated_pairs = rate_pairs_from_true_reward(pairs)
+        split = int(len(rated_pairs) * 0.8)
+        rated_train.extend(rated_pairs[:split])
+        rated_val.extend(rated_pairs[split:])
+        total_queries += len(rated_pairs)
+        print(f"rated {len(rated_pairs)} synthetic preference pairs; cumulative={total_queries}")
+
+        if rated_train:
+            train_preference_reward_model(
+                reward_model,
+                rated_train,
+                rated_val,
+                convert_traj=convert_traj,
+                use_delta_loss=config.mode == "delta",
+                batch_size=config.reward_model_batch_size,
+                epochs=config.reward_model_epochs,
+                patience=config.reward_model_patience,
+                learning_rate=config.reward_model_lr,
+            )
+            runtime.reward_model = reward_model
+            stat_trajectories = [pair.t1 for pair in rated_train + rated_val] + [pair.t2 for pair in rated_train + rated_val]
+            runtime.output_mean, runtime.output_std = reward_model_io_stats(reward_model, stat_trajectories, convert_traj)
+            print(f"reward model output stats: mean={runtime.output_mean}, std={runtime.output_std}")
+
+        policy_steps = policy_steps_by_round[round_index]
+        print(f"training PPO on {config.mode} reward for {policy_steps} timesteps")
+        learn_policy(
+            model,
+            policy_steps,
+            callbacks,
+            progress_bar=config.progress_bar,
+            reset_num_timesteps=False,
+            log_interval=config.policy_log_interval,
+        )
+
+        if total_queries >= config.query_budget:
+            print("synthetic query budget exhausted")
+
+    if config.final_policy_timesteps:
+        print(f"final PPO training on {config.mode} reward for {config.final_policy_timesteps} timesteps")
+        learn_policy(
+            model,
+            config.final_policy_timesteps,
+            callbacks,
+            progress_bar=config.progress_bar,
+            reset_num_timesteps=False,
+            log_interval=config.policy_log_interval,
+        )
+
+    return total_queries
+
+
 def validate_preference_reward_model(reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss: bool) -> float:
     if not val_pairs:
         return 0.0

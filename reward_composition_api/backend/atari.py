@@ -27,22 +27,16 @@ from .common import (
     BackendRunPaths,
     ComponentEvalCallback,
     SaveVecNormalizeOnBest,
-    choose_query_pairs,
     include_partial_feature,
     learn_policy,
     load_vecnormalize_eval_env,
     make_raw_eval_env as make_common_raw_eval_env,
     normalize_obs,
-    policy_training_schedule,
-    pretrain_reward_model,
-    query_schedule,
-    rate_pairs_from_true_reward,
     report_eval_curve,
     resolve_custom_partial,
-    reward_model_io_stats,
+    run_preference_training_loop,
     select_final_policy,
     summarize_component_rows,
-    train_preference_reward_model,
     write_component_summary_csv,
 )
 
@@ -483,33 +477,14 @@ def train_preference_mode(config: ExperimentConfig, spec: AtariRewardSpec, custo
 
     reward_model = RewardModel(input_size=obs_size + action_n + 1, hidden_sizes=config.reward_hidden_sizes)
     convert_traj = make_trajectory_converter(action_n, runtime.include_partial_feature)
-    rated_train = []
-    rated_val = []
-    total_queries = 0
-    pretraining_done = False
-    schedule = query_schedule(config.query_budget, config.rlhf_rounds)
-    policy_steps_by_round = policy_training_schedule(
-        config.timesteps,
-        config.rlhf_rounds,
-        config.policy_timesteps_per_round,
-    )
-    add_partial_to_predictions = config.mode in {"naive", "delta"}
-
-    if config.initial_timesteps:
-        print(f"initial PPO training on {config.mode} reward for {config.initial_timesteps} timesteps")
-        learn_policy(
-            model,
-            config.initial_timesteps,
-            callbacks,
-            progress_bar=config.progress_bar,
-            reset_num_timesteps=False,
-            log_interval=config.policy_log_interval,
-        )
-
-    for round_index, round_query_budget in enumerate(schedule):
-        collection_steps = config.collection_timesteps * (2 if round_index == 0 else 1)
-        print(f"\nPreference round {round_index}: collecting {collection_steps} Atari steps for {round_query_budget} queries")
-        trajectories = collect_policy_trajectories(
+    total_queries = run_preference_training_loop(
+        config,
+        model,
+        runtime,
+        callbacks,
+        reward_model,
+        convert_traj,
+        lambda round_index, collection_steps: collect_policy_trajectories(
             model,
             train_env,
             env_id=config.env_id,
@@ -518,83 +493,10 @@ def train_preference_mode(config: ExperimentConfig, spec: AtariRewardSpec, custo
             custom_partial=custom_partial,
             total_timesteps=collection_steps,
             seed=config.seed * 1000 + round_index * 100,
-        )
-
-        if config.pretrain_reward_model and not pretraining_done:
-            print(f"pretraining reward model on {config.pretrain_target} target")
-            pretrain_reward_model(
-                reward_model,
-                trajectories,
-                convert_traj,
-                target=config.pretrain_target,
-                epochs=config.pretrain_epochs,
-                batch_size=config.pretrain_batch_size,
-                learning_rate=config.pretrain_lr,
-            )
-            pretraining_done = True
-
-        query_model = reward_model if (total_queries > 0 or pretraining_done) else None
-        pairs = choose_query_pairs(
-            trajectories,
-            query_model,
-            query_count=min(round_query_budget, config.query_budget - total_queries),
-            fragment_length=config.fragment_length,
-            active_learning=config.active_learning,
-            convert_traj=convert_traj,
-            add_partial_to_predictions=add_partial_to_predictions,
-            dropout_samples=config.dropout_samples,
-            dropout_p=config.dropout_p,
-            active_learning_batches=config.active_learning_batches,
-            continuous=False,
-        )
-        rated_pairs = rate_pairs_from_true_reward(pairs)
-        split = int(len(rated_pairs) * 0.8)
-        rated_train.extend(rated_pairs[:split])
-        rated_val.extend(rated_pairs[split:])
-        total_queries += len(rated_pairs)
-        print(f"rated {len(rated_pairs)} synthetic preference pairs; cumulative={total_queries}")
-
-        if rated_train:
-            train_preference_reward_model(
-                reward_model,
-                rated_train,
-                rated_val,
-                convert_traj=convert_traj,
-                use_delta_loss=config.mode == "delta",
-                batch_size=config.reward_model_batch_size,
-                epochs=config.reward_model_epochs,
-                patience=config.reward_model_patience,
-                learning_rate=config.reward_model_lr,
-            )
-            runtime.reward_model = reward_model
-            stat_trajectories = [pair.t1 for pair in rated_train + rated_val] + [pair.t2 for pair in rated_train + rated_val]
-            runtime.output_mean, runtime.output_std = reward_model_io_stats(reward_model, stat_trajectories, convert_traj)
-            print(f"reward model output stats: mean={runtime.output_mean}, std={runtime.output_std}")
-
-        policy_steps = policy_steps_by_round[round_index]
-        print(f"training PPO on {config.mode} reward for {policy_steps} timesteps")
-        learn_policy(
-            model,
-            policy_steps,
-            callbacks,
-            progress_bar=config.progress_bar,
-            reset_num_timesteps=False,
-            log_interval=config.policy_log_interval,
-        )
-
-        if total_queries >= config.query_budget:
-            print("synthetic query budget exhausted")
-
-    if config.final_policy_timesteps:
-        print(f"final PPO training on {config.mode} reward for {config.final_policy_timesteps} timesteps")
-        learn_policy(
-            model,
-            config.final_policy_timesteps,
-            callbacks,
-            progress_bar=config.progress_bar,
-            reset_num_timesteps=False,
-            log_interval=config.policy_log_interval,
-        )
+        ),
+        continuous=False,
+        collection_label="Atari steps",
+    )
 
     return save_and_report(
         config,
