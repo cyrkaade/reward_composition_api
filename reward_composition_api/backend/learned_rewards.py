@@ -13,6 +13,7 @@ class BaseLearnedRewardRuntime:
     composition: str
     custom_partial: Any | None
     reward_model: RewardModel | None
+    reward_models: list[RewardModel] | None
     output_mean: float | None
     output_std: float | None
     target_mean: float
@@ -60,12 +61,15 @@ class BasePreferenceRewardWrapper(gym.Wrapper):
         return float(true_reward)
 
     def model_reward(self, observation, action, partial_reward: float) -> float:
-        if self.runtime.reward_model is None:
+        reward_models = self.runtime.reward_models or ([self.runtime.reward_model] if self.runtime.reward_model is not None else [])
+        if not reward_models:
             return 0.0
 
         model_input = self.model_features(observation, action, partial_reward)
         with th.no_grad():
-            output = self.runtime.reward_model(th.as_tensor(model_input, dtype=th.float32).view(1, -1)).reshape(-1)[0]
+            model_tensor = th.as_tensor(model_input, dtype=th.float32).view(1, -1)
+            outputs = th.stack([model(model_tensor).reshape(-1)[0] for model in reward_models])
+            output = th.mean(outputs)
         return self.runtime.transform_model_output(float(output.item()))
 
     def compose_reward(self, partial_reward: float, model_reward: float) -> float:

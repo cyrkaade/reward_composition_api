@@ -109,6 +109,26 @@ class LearnedRewardWrapperTest(unittest.TestCase):
         self.assertEqual(reward, 6.0)
         self.assertEqual(info["model_reward"], 6.0)
 
+    def test_mujoco_model_reward_averages_ensemble_outputs(self):
+        spec = MuJoCoRewardSpec(
+            env_id="DummyMuJoCo-v0",
+            slug="dummy",
+            partial_keys=("reward_dist",),
+            component_keys=("reward_dist",),
+        )
+        runtime = MuJoCoLearnedRewardRuntime(
+            spec=spec,
+            composition="feedback",
+            reward_models=[ConstantRewardModel(1.0), ConstantRewardModel(3.0)],
+        )
+        wrapper = MuJoCoPreferenceRewardWrapper(OneStepEnv(step_info={"reward_dist": 2.5}), runtime)
+
+        wrapper.reset()
+        _, reward, _, _, info = wrapper.step(np.asarray([0.0], dtype=np.float32))
+
+        self.assertEqual(reward, 2.0)
+        self.assertEqual(info["model_reward"], 2.0)
+
     def test_gym_and_atari_wrapper_names_remain_importable(self):
         self.assertTrue(callable(run_mujoco_experiment))
         self.assertTrue(callable(run_atari_experiment))

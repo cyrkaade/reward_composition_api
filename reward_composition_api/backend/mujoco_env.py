@@ -72,6 +72,7 @@ class MuJoCoLearnedRewardRuntime(BaseLearnedRewardRuntime):
     composition: str
     custom_partial: PartialSpec | None = None
     reward_model: RewardModel | None = None
+    reward_models: list[RewardModel] | None = None
     output_mean: float | None = None
     output_std: float | None = None
     target_mean: float = 0.0

@@ -271,15 +271,16 @@ def partial_reward_tensor(rated_pairs: list[Preference], side: str):
 
 
 def reward_model_io_stats(
-    reward_model: RewardModel,
+    reward_model: RewardModel | list[RewardModel],
     trajectories: list[Trajectory],
     convert_traj: Callable[[Trajectory], list[list[float]]],
 ):
     if not trajectories:
         return None, None
+    reward_models = reward_model if isinstance(reward_model, list) else [reward_model]
     with th.no_grad():
         trajectory_tensors = th.as_tensor([convert_traj(trajectory) for trajectory in trajectories], dtype=th.float32)
-        outputs = reward_model(trajectory_tensors).reshape(-1)
+        outputs = th.stack([model(trajectory_tensors).reshape(-1) for model in reward_models]).mean(dim=0)
     return float(outputs.mean().item()), float(outputs.std(unbiased=False).item())
 
 

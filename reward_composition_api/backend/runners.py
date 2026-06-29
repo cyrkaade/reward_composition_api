@@ -88,6 +88,14 @@ from .reporting import (
 from .rlhf import RlhfTrainer
 
 
+def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel | list[RewardModel]:
+    models = [
+        RewardModel(input_size=input_size, hidden_sizes=config.reward_hidden_sizes)
+        for _ in range(config.reward_model_ensemble_size)
+    ]
+    return models[0] if len(models) == 1 else models
+
+
 class BaseExperimentRunner:
     preference_modes = {"feedback", "naive", "delta"}
     direct_modes = {"true", "partial"}
@@ -301,7 +309,7 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
         input_size = probe_env.observation_space.shape[0] + action_shape[0] + 1
         probe_env.close()
 
-        reward_model = RewardModel(input_size=input_size, hidden_sizes=config.reward_hidden_sizes)
+        reward_model = make_reward_models(input_size, config)
         convert_traj = make_mujoco_trajectory_converter(runtime.include_partial_feature)
         total_queries = RlhfTrainer(
             config,
@@ -529,7 +537,7 @@ class GymExperimentRunner(BaseExperimentRunner):
         callbacks = self.build_callbacks(run_dir, train_env, eval_env)
         model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **hyperparams)
 
-        reward_model = RewardModel(input_size=reward_model_input_size, hidden_sizes=config.reward_hidden_sizes)
+        reward_model = make_reward_models(reward_model_input_size, config)
         convert_traj = make_gym_trajectory_converter(observation_space, action_space, runtime.include_partial_feature)
         total_queries = RlhfTrainer(
             config,
@@ -750,7 +758,7 @@ class AtariExperimentRunner(BaseExperimentRunner):
         callbacks = self.build_callbacks(run_dir, train_env, eval_env)
         model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **atari_ppo_hyperparams(config))
 
-        reward_model = RewardModel(input_size=obs_size + action_n + 1, hidden_sizes=config.reward_hidden_sizes)
+        reward_model = make_reward_models(obs_size + action_n + 1, config)
         convert_traj = make_atari_trajectory_converter(action_n, runtime.include_partial_feature)
         total_queries = RlhfTrainer(
             config,

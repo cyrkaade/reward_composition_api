@@ -13,6 +13,7 @@ from .common import (
     query_schedule,
     rate_pairs_from_true_reward,
     reward_model_io_stats,
+    train_preference_reward_ensemble,
     train_preference_reward_model,
 )
 
@@ -24,7 +25,7 @@ class RlhfTrainer:
         model,
         runtime,
         callbacks,
-        reward_model: RewardModel,
+        reward_model: RewardModel | list[RewardModel],
         convert_traj: Callable[[Trajectory], list[list[float]]],
         collect_trajectories: Callable[[int, int], list[Trajectory]],
         continuous: bool,
@@ -34,7 +35,8 @@ class RlhfTrainer:
         self.model = model
         self.runtime = runtime
         self.callbacks = callbacks
-        self.reward_model = reward_model
+        self.reward_models = reward_model if isinstance(reward_model, list) else [reward_model]
+        self.reward_model = self.reward_models[0]
         self.convert_traj = convert_traj
         self.collect_trajectories = collect_trajectories
         self.continuous = continuous
@@ -90,20 +92,23 @@ class RlhfTrainer:
         config = self.config
         if config.pretrain_reward_model and not self.pretraining_done:
             print(f"pretraining reward model on {config.pretrain_target} target")
-            pretrain_reward_model(
-                self.reward_model,
-                trajectories,
-                self.convert_traj,
-                target=config.pretrain_target,
-                epochs=config.pretrain_epochs,
-                batch_size=config.pretrain_batch_size,
-                learning_rate=config.pretrain_lr,
-            )
+            for model_index, reward_model in enumerate(self.reward_models):
+                if len(self.reward_models) > 1:
+                    print(f"pretraining reward ensemble member {model_index + 1}/{len(self.reward_models)}")
+                pretrain_reward_model(
+                    reward_model,
+                    trajectories,
+                    self.convert_traj,
+                    target=config.pretrain_target,
+                    epochs=config.pretrain_epochs,
+                    batch_size=config.pretrain_batch_size,
+                    learning_rate=config.pretrain_lr,
+                )
             self.pretraining_done = True
 
     def add_query_pairs(self, trajectories: list[Trajectory], round_query_budget: int) -> None:
         config = self.config
-        query_model = self.reward_model if (self.total_queries > 0 or self.pretraining_done) else None
+        query_model = self.reward_models if (self.total_queries > 0 or self.pretraining_done) else None
         pairs = choose_query_pairs(
             trajectories,
             query_model,
@@ -116,6 +121,7 @@ class RlhfTrainer:
             dropout_p=config.dropout_p,
             active_learning_batches=config.active_learning_batches,
             continuous=self.continuous,
+            active_query_strategy=config.active_query_strategy,
         )
         rated_pairs = rate_pairs_from_true_reward(pairs)
         split = int(len(rated_pairs) * 0.8)
@@ -127,23 +133,38 @@ class RlhfTrainer:
     def maybe_train_reward_model(self) -> None:
         config = self.config
         if self.rated_train:
-            train_preference_reward_model(
-                self.reward_model,
-                self.rated_train,
-                self.rated_val,
-                convert_traj=self.convert_traj,
-                use_delta_loss=config.mode == "delta",
-                batch_size=config.reward_model_batch_size,
-                epochs=config.reward_model_epochs,
-                patience=config.reward_model_patience,
-                learning_rate=config.reward_model_lr,
-            )
-            self.runtime.reward_model = self.reward_model
+            if len(self.reward_models) > 1:
+                train_preference_reward_ensemble(
+                    self.reward_models,
+                    self.rated_train + self.rated_val,
+                    convert_traj=self.convert_traj,
+                    use_delta_loss=config.mode == "delta",
+                    batch_size=config.reward_model_batch_size,
+                    epochs=config.reward_model_epochs,
+                    patience=config.reward_model_patience,
+                    learning_rate=config.reward_model_lr,
+                )
+                self.runtime.reward_model = None
+                self.runtime.reward_models = self.reward_models
+            else:
+                train_preference_reward_model(
+                    self.reward_model,
+                    self.rated_train,
+                    self.rated_val,
+                    convert_traj=self.convert_traj,
+                    use_delta_loss=config.mode == "delta",
+                    batch_size=config.reward_model_batch_size,
+                    epochs=config.reward_model_epochs,
+                    patience=config.reward_model_patience,
+                    learning_rate=config.reward_model_lr,
+                )
+                self.runtime.reward_model = self.reward_model
+                self.runtime.reward_models = None
             stat_trajectories = [pair.t1 for pair in self.rated_train + self.rated_val] + [
                 pair.t2 for pair in self.rated_train + self.rated_val
             ]
             self.runtime.output_mean, self.runtime.output_std = reward_model_io_stats(
-                self.reward_model,
+                self.reward_models,
                 stat_trajectories,
                 self.convert_traj,
             )
