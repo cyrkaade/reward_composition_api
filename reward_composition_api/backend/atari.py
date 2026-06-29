@@ -29,17 +29,17 @@ from .common import (
     choose_query_pairs,
     include_partial_feature,
     learn_policy,
-    load_eval_curve,
     load_vecnormalize_eval_env,
     make_raw_eval_env as make_common_raw_eval_env,
     normalize_obs,
     policy_training_schedule,
-    plot_true_reward_curve,
     pretrain_reward_model,
     query_schedule,
     rate_pairs_from_true_reward,
+    report_eval_curve,
     resolve_custom_partial,
     reward_model_io_stats,
+    select_final_policy,
     summarize_component_rows,
     train_preference_reward_model,
     write_component_summary_csv,
@@ -627,24 +627,16 @@ def save_and_report(
     eval_log_path = run_dir / "eval" / "evaluations.npz"
     plot_path = run_dir / "true_reward_curve.png"
     actual_timesteps = int(model.num_timesteps)
-    best_logged_reward = None
-    best_logged_timestep = None
-    if eval_log_path.exists():
-        plot_true_reward_curve(
-            eval_log_path,
-            plot_path,
-            max(config.timesteps, actual_timesteps),
-            config.plot_mode,
-            config.smooth_window,
-            x_scale=1e6,
-            x_label="Timesteps (millions)",
-            y_floor=None,
-        )
-        eval_timesteps, eval_rewards = load_eval_curve(eval_log_path)
-        best_idx = int(np.argmax(eval_rewards))
-        best_logged_reward = float(eval_rewards[best_idx])
-        best_logged_timestep = int(eval_timesteps[best_idx])
-        print(f"Best logged true reward: {best_logged_reward:.3f} at {best_logged_timestep} timesteps")
+    best_logged_reward, best_logged_timestep = report_eval_curve(
+        eval_log_path,
+        plot_path,
+        max(config.timesteps, actual_timesteps),
+        config.plot_mode,
+        config.smooth_window,
+        x_scale=1e6,
+        x_label="Timesteps (millions)",
+        y_floor=None,
+    )
 
     final_stats = evaluate_atari_components(
         model,
@@ -659,15 +651,15 @@ def save_and_report(
     )
     write_atari_component_summary(run_dir / "eval" / "final_component_evaluation.csv", actual_timesteps, final_stats, custom_partial)
 
-    best_model_path = run_dir / "best_model" / "best_model.zip"
-    best_stats_path = run_dir / "best_model" / "best_vecnormalize.pkl"
-    final_policy = model
-    final_eval_env = eval_env
-    if config.final_policy == "best" and best_model_path.exists():
-        if best_stats_path.exists():
-            final_eval_env.close()
-            final_eval_env = load_eval_env(config.env_id, best_stats_path)
-        final_policy = PPO.load(best_model_path, env=final_eval_env, device=config.device)
+    final_policy, final_eval_env = select_final_policy(
+        config,
+        model,
+        eval_env,
+        run_dir,
+        load_eval_env,
+        PPO.load,
+        load_best_stats=True,
+    )
 
     mean_reward, std_reward = evaluate_policy(
         final_policy,

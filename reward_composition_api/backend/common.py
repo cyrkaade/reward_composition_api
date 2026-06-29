@@ -511,3 +511,55 @@ def plot_true_reward_curve(
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
+
+
+def report_eval_curve(
+    eval_log_path: Path,
+    plot_path: Path,
+    total_timesteps: int,
+    plot_mode: str,
+    smooth_window: int,
+    x_scale: float,
+    x_label: str,
+    y_floor: float | None = None,
+) -> tuple[float | None, int | None]:
+    if not eval_log_path.exists():
+        return None, None
+
+    plot_true_reward_curve(
+        eval_log_path,
+        plot_path,
+        total_timesteps,
+        plot_mode,
+        smooth_window,
+        x_scale=x_scale,
+        x_label=x_label,
+        y_floor=y_floor,
+    )
+    eval_timesteps, eval_rewards = load_eval_curve(eval_log_path)
+    best_idx = int(np.argmax(eval_rewards))
+    best_logged_reward = float(eval_rewards[best_idx])
+    best_logged_timestep = int(eval_timesteps[best_idx])
+    print(f"Best logged true reward: {best_logged_reward:.3f} at {best_logged_timestep} timesteps")
+    return best_logged_reward, best_logged_timestep
+
+
+def select_final_policy(
+    config,
+    model,
+    eval_env,
+    run_dir: Path,
+    load_eval_env_fn,
+    load_policy_fn,
+    load_best_stats: bool,
+):
+    best_model_path = run_dir / "best_model" / "best_model.zip"
+    best_stats_path = run_dir / "best_model" / "best_vecnormalize.pkl"
+    final_policy = model
+    final_eval_env = eval_env
+    if config.final_policy == "best" and best_model_path.exists():
+        if load_best_stats and best_stats_path.exists():
+            final_eval_env.close()
+            final_eval_env = load_eval_env_fn(config.env_id, best_stats_path)
+        final_policy = load_policy_fn(best_model_path, env=final_eval_env, device=config.device)
+    return final_policy, final_eval_env
