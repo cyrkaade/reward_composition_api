@@ -329,6 +329,60 @@ def train_preference_reward_model(
                 break
 
 
+def split_preference_k_folds(rated_pairs: list[Preference], k: int) -> list[list[Preference]]:
+    if k <= 0:
+        raise ValueError("k must be greater than zero")
+    folds = [[] for _ in range(k)]
+    shuffled = list(rated_pairs)
+    random.shuffle(shuffled)
+    for index, pair in enumerate(shuffled):
+        folds[index % k].append(pair)
+    return folds
+
+
+def train_preference_reward_ensemble(
+    reward_models: list[RewardModel],
+    rated_pairs: list[Preference],
+    convert_traj: Callable[[Trajectory], list[list[float]]],
+    use_delta_loss: bool,
+    batch_size: int,
+    epochs: int,
+    patience: int,
+    learning_rate: float = 0.01,
+) -> None:
+    if not rated_pairs:
+        return
+    if not reward_models:
+        raise ValueError("reward_models must not be empty")
+
+    folds = split_preference_k_folds(rated_pairs, len(reward_models))
+    for fold_index, reward_model in enumerate(reward_models):
+        val_pairs = folds[fold_index]
+        train_pairs = [
+            pair
+            for other_fold_index, fold in enumerate(folds)
+            if other_fold_index != fold_index
+            for pair in fold
+        ]
+        if not train_pairs:
+            train_pairs = list(rated_pairs)
+        print(
+            f"training reward ensemble member {fold_index + 1}/{len(reward_models)} "
+            f"on {len(train_pairs)} pairs; validating on {len(val_pairs)} pairs"
+        )
+        train_preference_reward_model(
+            reward_model,
+            train_pairs,
+            val_pairs,
+            convert_traj=convert_traj,
+            use_delta_loss=use_delta_loss,
+            batch_size=batch_size,
+            epochs=epochs,
+            patience=patience,
+            learning_rate=learning_rate,
+        )
+
+
 def validate_preference_reward_model(reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss: bool) -> float:
     if not val_pairs:
         return 0.0

@@ -15,7 +15,8 @@ from reward_composition_api.partials import build_builtin_registry
 from reward_composition_api.registry import load_partial_reference
 from reward_composition_api.summaries import summarize_runs
 from reward_composition_api.sweeps import plan_sweep, run_sweep
-from reward_composition_api.backend.common import query_schedule
+from reward_composition_api.backend.common import query_schedule, split_preference_k_folds
+from reward_model.preferences.preference import Preference
 from reward_model.reward_model import RewardModel
 
 
@@ -125,6 +126,17 @@ class RewardCompositionApiTest(unittest.TestCase):
 
         self.assertEqual(model.net[0].in_features, 4)
         self.assertEqual(model.net[-1].out_features, 1)
+
+    def test_preference_k_folds_use_all_pairs_once(self):
+        pairs = [Preference(None, None, float(index)) for index in range(11)]
+
+        folds = split_preference_k_folds(pairs, 5)
+        flattened = [pair for fold in folds for pair in fold]
+
+        self.assertEqual(len(folds), 5)
+        self.assertEqual(len(flattened), len(pairs))
+        self.assertEqual({id(pair) for pair in flattened}, {id(pair) for pair in pairs})
+        self.assertLessEqual(max(len(fold) for fold in folds) - min(len(fold) for fold in folds), 1)
 
     def test_atari_feedback_mode_is_supported(self):
         config = normalize_experiment_config(ExperimentConfig(suite="atari", mode="feedback"))
