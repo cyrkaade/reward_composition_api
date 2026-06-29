@@ -1,0 +1,43 @@
+$exp = "hopper_query_budget_100_1000_10000_active_epochs_200k_seed21"
+$seed = 21
+
+foreach ($q in 100, 1000, 10000) {
+  python experiments\run_generic_experiment.py `
+    --suite mujoco `
+    --env-id Hopper-v5 `
+    --experiment-name $exp `
+    --method vanilla `
+    --run-name "hopper_vanilla_q${q}_200k_seed${seed}" `
+    --seed $seed `
+    --timesteps 200000 `
+    --policy-timesteps-per-round 10000 `
+    --final-policy-timesteps 100000 `
+    --rlhf-rounds 10 `
+    --n-pairs $q `
+    --reward-epochs 100 `
+    --reward-patience 10 `
+    --reward-model-lr 0.001 `
+    --active-learning `
+    --collection-timesteps 2500 `
+    --fragment-length 1 `
+    --n-envs 8 `
+    --policy-learning-kwargs '{n_steps:125,batch_size:125}' `
+    --eval-interval 10000 `
+    --eval-episodes 10 `
+    --final-eval-episodes 100
+}
+
+python experiments\run_generic_experiment.py `
+  --suite mujoco `
+  --env-id Hopper-v5 `
+  --experiment-name $exp `
+  --closed-form-file hopper_true_reward `
+  --method partial `
+  --run-name "hopper_true_reward_200k_seed${seed}" `
+  --seed $seed `
+  --timesteps 200000 `
+  --n-envs 8 `
+  --policy-learning-kwargs '{n_steps:125,batch_size:125}' `
+  --eval-interval 10000 `
+  --eval-episodes 10 `
+  --final-eval-episodes 100
