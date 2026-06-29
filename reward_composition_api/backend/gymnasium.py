@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -25,6 +24,7 @@ from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
 
 from .common import (
+    ComponentEvalCallback,
     SaveVecNormalizeOnBest,
     choose_query_pairs,
     include_partial_feature,
@@ -748,7 +748,7 @@ def write_gym_component_summary(path: Path, timestep: int, stats: dict, custom_p
     write_component_summary_csv(path, timestep, stats, component_fieldnames(custom_partial))
 
 
-class GymComponentEvalCallback(BaseCallback):
+class GymComponentEvalCallback(ComponentEvalCallback):
     def __init__(
         self,
         log_path: Path,
@@ -759,26 +759,15 @@ class GymComponentEvalCallback(BaseCallback):
         seed: int = 10_000,
         verbose: int = 0,
     ):
-        super().__init__(verbose=verbose)
-        self.log_path = Path(log_path)
+        super().__init__(log_path, eval_freq, n_eval_episodes, seed=seed, verbose=verbose)
         self.env_id = env_id
         self.custom_partial = custom_partial
-        self.eval_freq = max(int(eval_freq), 1)
-        self.n_eval_episodes = n_eval_episodes
-        self.seed = seed
 
-    def _init_callback(self) -> None:
-        self.log_path.parent.mkdir(exist_ok=True, parents=True)
-        if not self.log_path.exists():
-            with self.log_path.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=component_fieldnames(self.custom_partial))
-                writer.writeheader()
+    def component_fieldnames(self) -> list[str]:
+        return component_fieldnames(self.custom_partial)
 
-    def _on_step(self) -> bool:
-        if self.n_calls % self.eval_freq != 0:
-            return True
-
-        stats = evaluate_gym_components(
+    def evaluate_components(self) -> dict:
+        return evaluate_gym_components(
             self.model,
             self.env_id,
             custom_partial=self.custom_partial,
@@ -787,16 +776,18 @@ class GymComponentEvalCallback(BaseCallback):
             seed=self.seed + self.num_timesteps,
             deterministic=True,
         )
+
+    def write_summary(self, stats: dict) -> None:
         write_gym_component_summary(self.log_path, self.num_timesteps, stats, self.custom_partial)
-        if self.verbose:
-            print(
-                "Gym component eval "
-                f"env={self.env_id} t={self.num_timesteps}: "
-                f"total={stats['mean_total']:.3f}, "
-                f"partial={stats['mean_partial']:.3f}, "
-                f"residual={stats['mean_residual']:.3f}"
-            )
-        return True
+
+    def log_message(self, stats: dict) -> str:
+        return (
+            "Gym component eval "
+            f"env={self.env_id} t={self.num_timesteps}: "
+            f"total={stats['mean_total']:.3f}, "
+            f"partial={stats['mean_partial']:.3f}, "
+            f"residual={stats['mean_residual']:.3f}"
+        )
 
 
 def default_run_name(config: ExperimentConfig) -> str:

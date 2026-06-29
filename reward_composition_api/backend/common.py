@@ -41,6 +41,53 @@ class SaveVecNormalizeOnBest(BaseCallback):
         return True
 
 
+class ComponentEvalCallback(BaseCallback):
+    def __init__(
+        self,
+        log_path: Path,
+        eval_freq: int,
+        n_eval_episodes: int,
+        seed: int = 10_000,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose=verbose)
+        self.log_path = Path(log_path)
+        self.eval_freq = max(int(eval_freq), 1)
+        self.n_eval_episodes = n_eval_episodes
+        self.seed = seed
+
+    def component_fieldnames(self) -> list[str]:
+        raise NotImplementedError
+
+    def evaluate_components(self) -> dict:
+        raise NotImplementedError
+
+    def write_summary(self, stats: dict) -> None:
+        raise NotImplementedError
+
+    def log_message(self, stats: dict) -> str:
+        return ""
+
+    def _init_callback(self) -> None:
+        self.log_path.parent.mkdir(exist_ok=True, parents=True)
+        if not self.log_path.exists():
+            with self.log_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=self.component_fieldnames())
+                writer.writeheader()
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.eval_freq != 0:
+            return True
+
+        stats = self.evaluate_components()
+        self.write_summary(stats)
+        if self.verbose:
+            message = self.log_message(stats)
+            if message:
+                print(message)
+        return True
+
+
 def normalize_obs(stats_source, observation):
     observation = np.asarray(observation, dtype=np.float32).reshape(1, -1)
     if isinstance(stats_source, VecNormalize):
