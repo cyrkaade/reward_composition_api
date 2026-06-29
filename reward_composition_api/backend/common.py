@@ -586,30 +586,6 @@ class RlhfTrainer:
             )
 
 
-def run_preference_training_loop(
-    config,
-    model,
-    runtime,
-    callbacks,
-    reward_model: RewardModel,
-    convert_traj: Callable[[Trajectory], list[list[float]]],
-    collect_trajectories: Callable[[int, int], list[Trajectory]],
-    continuous: bool,
-    collection_label: str,
-) -> int:
-    return RlhfTrainer(
-        config,
-        model,
-        runtime,
-        callbacks,
-        reward_model,
-        convert_traj,
-        collect_trajectories,
-        continuous,
-        collection_label,
-    ).run()
-
-
 def validate_preference_reward_model(reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss: bool) -> float:
     if not val_pairs:
         return 0.0
