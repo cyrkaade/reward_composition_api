@@ -8,6 +8,7 @@ import numpy as np
 from . import run_experiment, run_sweep, summarize_runs
 from .config import (
     ATARI_PARTIAL_SOURCES,
+    ACTIVE_QUERY_STRATEGIES,
     DEVICES,
     FINAL_POLICIES,
     MUJOCO_PARTIAL_PROFILES,
@@ -120,6 +121,7 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fragment-length", type=int, default=None)
     parser.add_argument("--active-learning", action="store_true", default=None)
     parser.add_argument("--no-active-learning", action="store_false", dest="active_learning")
+    parser.add_argument("--active-query-strategy", choices=ACTIVE_QUERY_STRATEGIES, default="auto")
     parser.add_argument("--dropout-samples", type=int, default=8)
     parser.add_argument("--dropout-p", type=float, default=0.25)
     parser.add_argument("--active-learning-batches", type=int, default=512)
@@ -129,6 +131,7 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reward-model-epochs", "--reward-epochs", dest="reward_model_epochs", type=int, default=100)
     parser.add_argument("--reward-model-patience", type=int, default=10)
     parser.add_argument("--reward-model-batch-size", "--reward-batch-size", dest="reward_model_batch_size", type=int, default=32)
+    parser.add_argument("--reward-model-ensemble-size", "--reward-ensemble-size", dest="reward_model_ensemble_size", type=int, default=1)
     parser.add_argument("--model-reward-scale", type=float, default=1.0)
     parser.add_argument("--model-reward-min", type=parse_optional_float, default=None)
     parser.add_argument("--model-reward-max", type=parse_optional_float, default=None)
@@ -167,6 +170,8 @@ def add_sweep_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reward-model-epochs", type=int, default=100)
     parser.add_argument("--reward-model-patience", type=int, default=10)
     parser.add_argument("--reward-model-batch-size", type=int, default=32)
+    parser.add_argument("--reward-model-ensemble-size", type=int, default=1)
+    parser.add_argument("--active-query-strategy", choices=ACTIVE_QUERY_STRATEGIES, default="auto")
     parser.add_argument("--active-learning-batches", type=int, default=512)
     parser.add_argument("--pretrain-epochs", type=int, default=25)
     parser.add_argument("--pretrain-batch-size", type=int, default=256)
@@ -217,6 +222,7 @@ def _handle_train(args) -> int:
         collection_timesteps=args.collection_timesteps,
         fragment_length=args.fragment_length,
         active_learning=args.active_learning,
+        active_query_strategy=args.active_query_strategy,
         dropout_samples=args.dropout_samples,
         dropout_p=args.dropout_p,
         active_learning_batches=args.active_learning_batches,
@@ -225,6 +231,7 @@ def _handle_train(args) -> int:
         reward_model_epochs=args.reward_model_epochs,
         reward_model_patience=args.reward_model_patience,
         reward_model_batch_size=args.reward_model_batch_size,
+        reward_model_ensemble_size=args.reward_model_ensemble_size,
         model_reward_scale=args.model_reward_scale,
         model_reward_min=args.model_reward_min,
         model_reward_max=args.model_reward_max,
@@ -264,6 +271,8 @@ def _handle_sweep(args) -> int:
             reward_model_epochs=args.reward_model_epochs,
             reward_model_patience=args.reward_model_patience,
             reward_model_batch_size=args.reward_model_batch_size,
+            reward_model_ensemble_size=args.reward_model_ensemble_size,
+            active_query_strategy=args.active_query_strategy,
             active_learning_batches=args.active_learning_batches,
             pretrain_epochs=args.pretrain_epochs,
             pretrain_batch_size=args.pretrain_batch_size,

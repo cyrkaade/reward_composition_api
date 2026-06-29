@@ -28,6 +28,7 @@ FINAL_POLICIES = ("best", "last")
 PLOT_MODES = ("best", "raw")
 DEVICES = ("auto", "cpu", "cuda")
 PRETRAIN_TARGETS = ("partial", "residual", "true")
+ACTIVE_QUERY_STRATEGIES = ("auto", "dropout", "ensemble")
 MUJOCO_PRESETS = ("auto", "generic", "reacher")
 MUJOCO_PARTIAL_PROFILES = ("default", "ctrl_half", "true_like")
 ATARI_PARTIAL_SOURCES = ("life_loss", "clipped_score_life_loss", "score", "score_life_loss")
@@ -69,6 +70,7 @@ class ExperimentConfig:
     collection_timesteps: int | None = None
     fragment_length: int | None = None
     active_learning: bool | None = None
+    active_query_strategy: str = "auto"
     dropout_samples: int = 8
     dropout_p: float = 0.25
     active_learning_batches: int = 512
@@ -78,6 +80,7 @@ class ExperimentConfig:
     reward_model_epochs: int = 100
     reward_model_patience: int = 10
     reward_model_batch_size: int = 32
+    reward_model_ensemble_size: int = 1
     model_reward_scale: float = 1.0
     model_reward_min: float | None = None
     model_reward_max: float | None = None
@@ -115,6 +118,8 @@ class SweepConfig:
     reward_model_epochs: int = 100
     reward_model_patience: int = 10
     reward_model_batch_size: int = 32
+    reward_model_ensemble_size: int = 1
+    active_query_strategy: str = "auto"
     active_learning_batches: int = 512
     pretrain_epochs: int = 25
     pretrain_batch_size: int = 256
@@ -304,6 +309,10 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("reward_hidden_sizes must contain positive integers")
     if config.reward_model_lr <= 0:
         raise ConfigError("reward_model_lr must be greater than zero")
+    if config.reward_model_ensemble_size <= 0:
+        raise ConfigError("reward_model_ensemble_size must be greater than zero")
+    if config.active_query_strategy not in ACTIVE_QUERY_STRATEGIES:
+        raise ConfigError(f"Unsupported active_query_strategy '{config.active_query_strategy}'")
     if config.device not in DEVICES:
         raise ConfigError(f"Unsupported device '{config.device}'. Supported devices: {', '.join(DEVICES)}")
     if config.final_policy not in FINAL_POLICIES:
@@ -333,6 +342,10 @@ def _validate_sweep(config: SweepConfig) -> None:
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
     if config.device not in DEVICES:
         raise ConfigError(f"Unsupported device '{config.device}'")
+    if config.reward_model_ensemble_size <= 0:
+        raise ConfigError("reward_model_ensemble_size must be greater than zero")
+    if config.active_query_strategy not in ACTIVE_QUERY_STRATEGIES:
+        raise ConfigError(f"Unsupported active_query_strategy '{config.active_query_strategy}'")
     if config.suite == MUJOCO_SUITE and config.preset not in MUJOCO_PRESETS:
         raise ConfigError(f"Unsupported MuJoCo preset '{config.preset}'")
     if config.suite == ATARI_SUITE and config.partial_source not in ATARI_PARTIAL_SOURCES:
