@@ -1,22 +1,15 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 
-import gymnasium as gym
-import numpy as np
-import torch as th
-import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalCallback, StopTrainingOnRewardThreshold
-from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import VecNormalize
 
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec, get_mujoco_reward_spec
-from local_gym.wrappers.buffering_wrapper import Trajectory
 from reward_model.reward_model import RewardModel
 from reward_composition_api.config import ExperimentConfig
 from reward_composition_api.registry import PartialSpec
@@ -26,10 +19,18 @@ from .common import (
     SaveVecNormalizeOnBest,
     include_partial_feature,
     learn_policy,
-    load_vecnormalize_eval_env,
-    make_raw_eval_env as make_common_raw_eval_env,
-    normalize_obs,
     resolve_custom_partial,
+)
+from .mujoco_env import (
+    MuJoCoLearnedRewardRuntime,
+    MuJoCoPreferenceRewardWrapper,
+    collect_policy_trajectories,
+    load_eval_env,
+    make_eval_env,
+    make_raw_env,
+    make_trajectory_converter,
+    make_vecnormalize_env,
+    ppo_hyperparams,
 )
 from .mujoco_evaluation import (
     MuJoCoComponentEvalCallback,
@@ -45,148 +46,6 @@ from .reporting import (
 )
 
 
-REACHER_V5_PPO_PRESETS = {
-    "mujoco_reacher": {
-        "recommended_n_envs": 1,
-        "hyperparams": {
-            "policy": "MlpPolicy",
-            "n_steps": 512,
-            "batch_size": 32,
-            "gamma": 0.9,
-            "learning_rate": 0.000104019,
-            "ent_coef": 7.52585e-08,
-            "clip_range": 0.3,
-            "n_epochs": 5,
-            "gae_lambda": 1.0,
-            "max_grad_norm": 0.9,
-            "vf_coef": 0.950368,
-            "policy_kwargs": {
-                "log_std_init": -2,
-                "ortho_init": False,
-                "activation_fn": nn.ReLU,
-                "net_arch": {"pi": [256, 256], "vf": [256, 256]},
-            },
-        },
-    }
-}
-
-
-GENERIC_MUJOCO_PPO_PRESET = {
-    "policy": "MlpPolicy",
-    "n_steps": 2048,
-    "batch_size": 64,
-    "gamma": 0.99,
-    "learning_rate": 3e-4,
-    "ent_coef": 0.0,
-    "clip_range": 0.2,
-    "n_epochs": 10,
-    "gae_lambda": 0.95,
-    "max_grad_norm": 0.5,
-    "vf_coef": 0.5,
-    "policy_kwargs": {
-        "activation_fn": nn.Tanh,
-        "net_arch": {"pi": [256, 256], "vf": [256, 256]},
-    },
-}
-
-
-@dataclass
-class MuJoCoLearnedRewardRuntime:
-    spec: MuJoCoRewardSpec
-    composition: str
-    custom_partial: PartialSpec | None = None
-    reward_model: RewardModel | None = None
-    output_mean: float | None = None
-    output_std: float | None = None
-    target_mean: float = 0.0
-    target_std: float = 1.0
-    reward_min: float | None = None
-    reward_max: float | None = None
-    reward_scale: float = 1.0
-    normalize: bool = False
-    include_partial_feature: bool = True
-
-
-class MuJoCoPreferenceRewardWrapper(gym.Wrapper):
-    def __init__(self, env, runtime: MuJoCoLearnedRewardRuntime):
-        super().__init__(env)
-        self.runtime = runtime
-        self.partial = runtime.custom_partial.create(runtime.spec.env_id) if runtime.custom_partial else None
-        self._last_obs = None
-
-    def reset(self, **kwargs):
-        observation, info = self.env.reset(**kwargs)
-        self._last_obs = observation
-        if self.partial is not None:
-            self.partial.reset(info)
-        return observation, info
-
-    def _partial_reward(self, previous_obs, action, observation, true_reward, terminated, truncated, info):
-        if self.partial is None:
-            return self.runtime.spec.partial_reward(info), {}
-        step = self.partial.step(previous_obs, action, observation, true_reward, terminated, truncated, info)
-        return step.partial, step.components
-
-    def _model_reward(self, observation, action, partial_reward):
-        if self.runtime.reward_model is None:
-            return 0.0
-
-        partial_feature = partial_reward if self.runtime.include_partial_feature else 0.0
-        model_input = np.concatenate(
-            [
-                np.asarray(observation, dtype=np.float32).reshape(-1),
-                np.asarray(action, dtype=np.float32).reshape(-1),
-                np.asarray([partial_feature], dtype=np.float32),
-            ]
-        )
-        with th.no_grad():
-            output = self.runtime.reward_model(th.as_tensor(model_input, dtype=th.float32).view(1, -1)).reshape(-1)[0]
-
-        value = float(output.item())
-        if self.runtime.normalize and self.runtime.output_mean is not None and self.runtime.output_std is not None:
-            value = (
-                (value - self.runtime.output_mean)
-                / max(self.runtime.output_std, 1e-8)
-                * self.runtime.target_std
-                + self.runtime.target_mean
-            )
-        value *= self.runtime.reward_scale
-        if self.runtime.reward_min is not None or self.runtime.reward_max is not None:
-            value = float(np.clip(value, self.runtime.reward_min, self.runtime.reward_max))
-        return value
-
-    def step(self, action):
-        previous_obs = self._last_obs
-        observation, true_reward, terminated, truncated, info = self.env.step(action)
-        partial_reward, partial_components = self._partial_reward(
-            previous_obs,
-            action,
-            observation,
-            true_reward,
-            terminated,
-            truncated,
-            info,
-        )
-        model_reward = self._model_reward(observation, action, partial_reward)
-
-        if self.runtime.composition == "partial":
-            training_reward = partial_reward
-        elif self.runtime.composition == "feedback":
-            training_reward = model_reward
-        elif self.runtime.composition in {"naive", "delta"}:
-            training_reward = partial_reward + model_reward
-        else:
-            raise ValueError(f"Unsupported learned-reward composition: {self.runtime.composition}")
-
-        info["true_reward"] = true_reward
-        info["partial_reward"] = partial_reward
-        info["partial_components"] = partial_components
-        info["model_reward"] = model_reward
-        info["learned_reward"] = training_reward
-        self._last_obs = observation
-        return observation, training_reward, terminated, truncated, info
-
-
 def run_mujoco_experiment(config: ExperimentConfig) -> RunResult:
     spec = get_mujoco_reward_spec(config.env_id).with_partial_profile(config.partial_profile)
     custom_partial = _resolve_custom_partial(config)
@@ -196,110 +55,6 @@ def run_mujoco_experiment(config: ExperimentConfig) -> RunResult:
     if config.mode in {"true", "partial"}:
         return train_true_or_partial(config, spec, custom_partial)
     return train_preference_mode(config, spec, custom_partial)
-
-
-def make_raw_env(env_id: str):
-    return gym.make(env_id)
-
-
-def make_raw_eval_env(env_id: str):
-    return make_common_raw_eval_env(make_raw_env, env_id)
-
-
-def make_vecnormalize_env(env_fn, n_envs: int, monitor_dir: Path) -> VecNormalize:
-    env = make_vec_env(
-        env_fn,
-        n_envs=n_envs,
-        vec_env_cls=DummyVecEnv,
-        monitor_dir=str(monitor_dir),
-    )
-    return VecNormalize(env, norm_obs=True, norm_reward=True)
-
-
-def make_eval_env(env_id: str, stats_source: VecNormalize | None = None) -> VecNormalize:
-    env = VecNormalize(make_raw_eval_env(env_id), norm_obs=True, norm_reward=False, training=False)
-    if stats_source is not None:
-        env.obs_rms = stats_source.obs_rms
-        env.ret_rms = stats_source.ret_rms
-    return env
-
-
-def load_eval_env(env_id: str, stats_path: Path) -> VecNormalize:
-    return load_vecnormalize_eval_env(env_id, stats_path, make_raw_eval_env)
-
-
-def make_trajectory_converter(include_partial_feature: bool):
-    def convert(trajectory: Trajectory):
-        rows = []
-        for state in trajectory.states:
-            partial_feature = state["partial_rew"] if include_partial_feature else 0.0
-            rows.append(
-                [
-                    *np.asarray(state["obs"], dtype=np.float32).reshape(-1).tolist(),
-                    *np.asarray(state["act"], dtype=np.float32).reshape(-1).tolist(),
-                    float(partial_feature),
-                ]
-            )
-        return rows
-
-    return convert
-
-
-def collect_policy_trajectories(
-    model: PPO,
-    stats_source,
-    env_id: str,
-    spec: MuJoCoRewardSpec,
-    custom_partial: PartialSpec | None,
-    total_timesteps: int,
-    seed: int,
-) -> list[Trajectory]:
-    env = make_raw_env(env_id)
-    partial = custom_partial.create(env_id) if custom_partial else None
-    trajectories = []
-    trajectory = Trajectory()
-    obs, info = env.reset(seed=seed)
-    if partial is not None:
-        partial.reset(info)
-    steps = 0
-
-    try:
-        while steps < total_timesteps:
-            model_obs = normalize_obs(stats_source, obs)
-            action, _ = model.predict(model_obs, deterministic=False)
-            action = action[0]
-            new_obs, true_reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            if partial is None:
-                partial_reward = spec.partial_reward(info)
-            else:
-                partial_reward = partial.step(obs, action, new_obs, true_reward, terminated, truncated, info).partial
-            trajectory.push_state(new_obs, action, done, info, float(true_reward), partial_reward)
-            steps += 1
-
-            if done:
-                trajectories.append(trajectory)
-                trajectory = Trajectory()
-                obs, info = env.reset()
-                if partial is not None:
-                    partial.reset(info)
-            else:
-                obs = new_obs
-    finally:
-        env.close()
-
-    if trajectory.states:
-        trajectories.append(trajectory)
-    return trajectories
-
-
-def ppo_hyperparams(config: ExperimentConfig):
-    if config.preset == "reacher" or (config.preset == "auto" and config.env_id == "Reacher-v5"):
-        hyperparams = deepcopy(REACHER_V5_PPO_PRESETS["mujoco_reacher"]["hyperparams"])
-    else:
-        hyperparams = deepcopy(GENERIC_MUJOCO_PPO_PRESET)
-    hyperparams.update(config.policy_learning_kwargs or {})
-    return hyperparams
 
 
 def build_callbacks(
@@ -590,6 +345,4 @@ def _resolve_custom_partial(config: ExperimentConfig) -> PartialSpec | None:
 
 
 def _with_run_identity(config: ExperimentConfig, run_name: str, variant_name: str) -> ExperimentConfig:
-    from dataclasses import replace
-
     return replace(config, run_name=run_name, variant_name=variant_name)
