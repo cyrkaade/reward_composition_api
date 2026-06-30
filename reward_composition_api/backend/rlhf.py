@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from local_gym.wrappers.buffering_wrapper import Trajectory
+from reward_composition_api.wrappers.trajectory_buffering import Trajectory
 from reward_model.reward_model import RewardModel
 
 from .common import (

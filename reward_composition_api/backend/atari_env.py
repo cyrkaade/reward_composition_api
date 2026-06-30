@@ -12,13 +12,14 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from local_gym.classes.atari_reward_specs import AtariRewardSpec
-from local_gym.wrappers.buffering_wrapper import Trajectory
 from reward_composition_api.config import ExperimentConfig
 from reward_composition_api.registry import PartialSpec
+from reward_composition_api.wrappers.trajectory_buffering import Trajectory
 from reward_model.reward_model import RewardModel
 
 from .common import load_vecnormalize_eval_env, make_raw_eval_env as make_common_raw_eval_env, normalize_obs
 from .learned_rewards import BaseLearnedRewardRuntime, BasePreferenceRewardWrapper
+from reward_composition_api.wrappers.atari import AtariFireResetEnv
 
 
 GENERIC_ATARI_RAM_PPO_PRESET = {
@@ -100,52 +101,6 @@ class AtariPreferenceRewardWrapper(BasePreferenceRewardWrapper):
 
     def unsupported_composition_message(self) -> str:
         return f"Unsupported Atari reward composition: {self.runtime.composition}"
-
-
-class AtariFireResetEnv(gym.Wrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        meanings = list(env.unwrapped.get_action_meanings())
-        self.fire_action = meanings.index("FIRE") if "FIRE" in meanings else None
-        self.second_action = 2 if self.fire_action is not None and len(meanings) > 2 else None
-        self.prev_lives = 0
-
-    def reset(self, **kwargs):
-        observation, info = self.env.reset(**kwargs)
-        if self.fire_action is None:
-            self.prev_lives = int(info.get("lives", 0))
-            return observation, info
-
-        observation, _, terminated, truncated, info = self.env.step(self.fire_action)
-        if terminated or truncated:
-            observation, info = self.env.reset(**kwargs)
-            self.prev_lives = int(info.get("lives", 0))
-            return observation, info
-
-        if self.second_action is not None:
-            observation, _, terminated, truncated, info = self.env.step(self.second_action)
-            if terminated or truncated:
-                observation, info = self.env.reset(**kwargs)
-                self.prev_lives = int(info.get("lives", 0))
-                return observation, info
-
-        self.prev_lives = int(info.get("lives", 0))
-        return observation, info
-
-    def step(self, action):
-        observation, reward, terminated, truncated, info = self.env.step(action)
-        lives = int(info.get("lives", 0))
-        lost_life = self.fire_action is not None and not (terminated or truncated) and 0 < lives < self.prev_lives
-
-        if lost_life:
-            observation, extra_reward, terminated, truncated, info = self.env.step(self.fire_action)
-            reward += extra_reward
-            if self.second_action is not None and not (terminated or truncated):
-                observation, extra_reward, terminated, truncated, info = self.env.step(self.second_action)
-                reward += extra_reward
-
-        self.prev_lives = int(info.get("lives", 0))
-        return observation, reward, terminated, truncated, info
 
 
 def register_atari_envs() -> None:
