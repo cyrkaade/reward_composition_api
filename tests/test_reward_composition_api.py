@@ -15,7 +15,8 @@ from reward_composition_api.partials import build_builtin_registry
 from reward_composition_api.registry import load_partial_reference
 from reward_composition_api.summaries import summarize_runs
 from reward_composition_api.sweeps import plan_sweep, run_sweep
-from reward_composition_api.backend.common import query_schedule, split_preference_k_folds
+from reward_composition_api.reward_models import split_preference_k_folds
+from reward_composition_api.training import query_schedule
 from reward_model.preferences.preference import Preference
 from reward_model.reward_model import RewardModel
 
@@ -275,6 +276,19 @@ class RewardCompositionApiTest(unittest.TestCase):
             with self.subTest(argv=argv):
                 with contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(cli_main(argv), 0)
+
+    def test_production_code_outside_backend_does_not_import_backend(self):
+        root = Path(__file__).resolve().parents[1] / "reward_composition_api"
+        offenders = []
+        for path in root.rglob("*.py"):
+            relative = path.relative_to(root)
+            if relative.parts[0] == "backend":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "reward_composition_api.backend" in text or "from .backend" in text:
+                offenders.append(str(relative))
+
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

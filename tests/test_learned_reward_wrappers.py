@@ -10,17 +10,16 @@ from gymnasium import spaces
 
 from local_gym.wrappers.lunar_lander_rewards_wrapper import LunarLanderSaveInfo
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec
-from reward_composition_api.backend.atari import run_atari_experiment
-from reward_composition_api.backend.atari_env import AtariLearnedRewardRuntime, AtariPreferenceRewardWrapper
-from reward_composition_api.backend.gym_env import make_raw_env as make_gym_raw_env
-from reward_composition_api.backend.gym_env import GymLearnedRewardRuntime, GymPreferenceRewardWrapper
-from reward_composition_api.backend.gymnasium import run_gym_experiment
-from reward_composition_api.backend.mujoco import run_mujoco_experiment
-from reward_composition_api.backend.mujoco_env import MuJoCoLearnedRewardRuntime, MuJoCoPreferenceRewardWrapper
-from reward_composition_api.backend.runners import GymExperimentRunner
 from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.environments.atari_runtime import AtariLearnedRewardRuntime, AtariPreferenceRewardWrapper
 from reward_composition_api.environments.box2d_env import Box2DEnvironmentProfile
+from reward_composition_api.environments.gymnasium_runtime import GymLearnedRewardRuntime, GymPreferenceRewardWrapper
 from reward_composition_api.environments.gymnasium_env import GymnasiumEnvironmentProfile
+from reward_composition_api.environments.mujoco_runtime import MuJoCoLearnedRewardRuntime, MuJoCoPreferenceRewardWrapper
+from reward_composition_api.runners import GymExperimentRunner
+from reward_composition_api.runners.atari import run_atari_experiment
+from reward_composition_api.runners.gymnasium import run_gym_experiment
+from reward_composition_api.runners.mujoco import run_mujoco_experiment
 
 
 class ConstantRewardModel(th.nn.Module):
@@ -207,11 +206,12 @@ class LearnedRewardWrapperTest(unittest.TestCase):
         self.assertTrue(info["awake"])
 
     def test_gym_raw_env_only_wraps_lunar_lander_with_save_info(self):
-        with patch("reward_composition_api.backend.gym_env.gym.make", return_value=DummyLunarEnv()):
-            lunar_env = make_gym_raw_env("LunarLander-v3")
+        profile = Box2DEnvironmentProfile()
+        with patch("reward_composition_api.environments.box2d_env.gym.make", return_value=DummyLunarEnv()):
+            lunar_env = profile.make_raw_env("LunarLander-v3")
 
-        with patch("reward_composition_api.backend.gym_env.gym.make", return_value=DiscreteOneStepEnv()):
-            cartpole_env = make_gym_raw_env("CartPole-v1")
+        with patch("reward_composition_api.environments.box2d_env.gym.make", return_value=DiscreteOneStepEnv()):
+            cartpole_env = profile.make_raw_env("CartPole-v1")
 
         self.assertIsInstance(lunar_env, LunarLanderSaveInfo)
         self.assertNotIsInstance(cartpole_env, LunarLanderSaveInfo)

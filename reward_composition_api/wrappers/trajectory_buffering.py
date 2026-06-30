@@ -9,17 +9,7 @@ from reward_composition_api.data_structures import Trajectory
 
 
 class BufferingWrapper(VecEnvWrapper):
-    """Saves transitions of underlying VecEnv.
-
-    Retrieve saved transitions using `pop_transitions()`.
-    """
-
     def __init__(self, venv: VecEnv, closed_form_fn: Any, synthetic_expert_fn: Any | None = None):
-        """Builds BufferingWrapper.
-
-        Args:
-            venv: The wrapped VecEnv.
-        """
         super().__init__(venv)
         self.temp_trajectories = [Trajectory] * self.num_envs
         self.finished_trajectories = []
@@ -43,7 +33,6 @@ class BufferingWrapper(VecEnvWrapper):
     def step_wait(self):
         new_v_obs, v_rews, v_dones, v_infos = self.venv.step_wait()
 
-        # replace obs with terminal observation if environment is done
         v_obs = [v_infos[env_id].get("terminal_observation", new_v_obs[env_id]) for env_id in range(self.num_envs)]
 
         for env_idx in range(self.num_envs):

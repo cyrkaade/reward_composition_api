@@ -2,9 +2,6 @@ import torch as th
 from torch import Tensor
 
 class RewardModel(th.nn.Module):
-    """
-    A neural network (ideally of the same type as the policy/value networks), tasked to predict the reward for an observation/state.
-    """
     def __init__(self, input_size=10, hidden_sizes=(200,)):
         super(RewardModel, self).__init__()
         hidden_sizes = tuple(hidden_sizes)
