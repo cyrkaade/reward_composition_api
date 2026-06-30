@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import gymnasium as gym
 import numpy as np
 import torch as th
 from gymnasium import spaces
 
+from local_gym.wrappers.lunar_lander_rewards_wrapper import LunarLanderSaveInfo
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec
 from reward_composition_api.backend.atari import run_atari_experiment
 from reward_composition_api.backend.atari_env import AtariLearnedRewardRuntime, AtariPreferenceRewardWrapper
+from reward_composition_api.backend.gym_env import make_raw_env as make_gym_raw_env
 from reward_composition_api.backend.gym_env import GymLearnedRewardRuntime, GymPreferenceRewardWrapper
 from reward_composition_api.backend.gymnasium import run_gym_experiment
 from reward_composition_api.backend.mujoco import run_mujoco_experiment
@@ -46,6 +49,24 @@ class DiscreteOneStepEnv(OneStepEnv):
     def __init__(self, initial_info=None, step_info=None, reward: float = 5.0):
         super().__init__(initial_info, step_info, reward)
         self.action_space = spaces.Discrete(3)
+
+
+class DummyLander:
+    awake = True
+
+
+class DummyLunarEnv(DiscreteOneStepEnv):
+    @property
+    def unwrapped(self):
+        return self
+
+    @property
+    def lander(self):
+        return DummyLander()
+
+    @property
+    def game_over(self):
+        return True
 
 
 class LearnedRewardWrapperTest(unittest.TestCase):
@@ -172,6 +193,24 @@ class LearnedRewardWrapperTest(unittest.TestCase):
         self.assertEqual(reward, -1.0)
         self.assertEqual(step_info["partial_reward"], -1.0)
         self.assertEqual(step_info["learned_reward"], -1.0)
+
+    def test_lunar_lander_save_info_exposes_terminal_flags(self):
+        wrapper = LunarLanderSaveInfo(DummyLunarEnv())
+
+        _, _, _, _, info = wrapper.step(1)
+
+        self.assertTrue(info["game_over"])
+        self.assertTrue(info["awake"])
+
+    def test_gym_raw_env_only_wraps_lunar_lander_with_save_info(self):
+        with patch("reward_composition_api.backend.gym_env.gym.make", return_value=DummyLunarEnv()):
+            lunar_env = make_gym_raw_env("LunarLander-v3")
+
+        with patch("reward_composition_api.backend.gym_env.gym.make", return_value=DiscreteOneStepEnv()):
+            cartpole_env = make_gym_raw_env("CartPole-v1")
+
+        self.assertIsInstance(lunar_env, LunarLanderSaveInfo)
+        self.assertNotIsInstance(cartpole_env, LunarLanderSaveInfo)
 
 
 class Tracker:
