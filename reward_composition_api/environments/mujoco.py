@@ -10,7 +10,7 @@ from reward_composition_api.config import ExperimentConfig
 from reward_composition_api.data_structures import Trajectory
 from reward_composition_api.registry import PartialSpec
 
-from reward_composition_api.backend import mujoco_env as plumbing
+from . import mujoco_runtime as plumbing
 
 
 class MuJoCoEnvironmentProfile:

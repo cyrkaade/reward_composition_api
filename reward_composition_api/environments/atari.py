@@ -13,7 +13,7 @@ from reward_composition_api.config import ExperimentConfig
 from reward_composition_api.data_structures import Trajectory
 from reward_composition_api.registry import PartialSpec
 
-from reward_composition_api.backend import atari_env as plumbing
+from . import atari_runtime as plumbing
 
 
 class AtariEnvironmentProfile:

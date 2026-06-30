@@ -10,8 +10,12 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from reward_composition_api.backend.common import load_vecnormalize_eval_env, make_raw_eval_env as make_common_raw_eval_env
-from reward_composition_api.backend.gym_spaces import (
+from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.data_structures import Trajectory
+from reward_composition_api.registry import PartialSpec
+
+from .gymnasium_runtime import GymLearnedRewardRuntime, GymPreferenceRewardWrapper
+from .spaces import (
     action_features,
     action_for_space,
     is_image_space,
@@ -19,11 +23,7 @@ from reward_composition_api.backend.gym_spaces import (
     policy_observation,
     should_normalize_observation,
 )
-from reward_composition_api.config import ExperimentConfig
-from reward_composition_api.data_structures import Trajectory
-from reward_composition_api.registry import PartialSpec
-
-from reward_composition_api.backend.gym_env import GymLearnedRewardRuntime, GymPreferenceRewardWrapper
+from .vectorized import load_vecnormalize_eval_env, make_raw_eval_env as make_common_raw_eval_env
 
 
 class GymnasiumEnvironmentProfile:
