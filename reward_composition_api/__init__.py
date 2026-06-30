@@ -19,7 +19,7 @@ __all__ = [
 
 
 def run_experiment(config: ExperimentConfig) -> RunResult:
-    from .backend import run_experiment as _run_experiment
+    from .runners.dispatch import run_experiment as _run_experiment
 
     return _run_experiment(config)
 
