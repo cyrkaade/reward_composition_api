@@ -15,8 +15,9 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import VecNormalize
 
 from local_gym.classes.atari_reward_specs import AtariRewardSpec, get_atari_reward_spec
-from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec, get_mujoco_reward_spec
+from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec
 from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.environments.mujoco import MuJoCoEnvironmentProfile
 from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
 from reward_model.reward_model import RewardModel
@@ -63,17 +64,6 @@ from .gym_evaluation import (
     write_gym_component_summary,
 )
 from .gym_spaces import should_normalize_observation
-from .mujoco_env import (
-    MuJoCoLearnedRewardRuntime,
-    MuJoCoPreferenceRewardWrapper,
-    collect_policy_trajectories as collect_mujoco_policy_trajectories,
-    load_eval_env as load_mujoco_eval_env,
-    make_eval_env as make_mujoco_eval_env,
-    make_raw_env as make_mujoco_raw_env,
-    make_trajectory_converter as make_mujoco_trajectory_converter,
-    make_vecnormalize_env as make_mujoco_vecnormalize_env,
-    ppo_hyperparams as mujoco_ppo_hyperparams,
-)
 from .mujoco_evaluation import (
     MuJoCoComponentEvalCallback,
     _component_keys as mujoco_component_keys,
@@ -227,8 +217,10 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
         config: ExperimentConfig,
         spec: MuJoCoRewardSpec | None = None,
         custom_partial: PartialSpec | None = None,
+        profile: MuJoCoEnvironmentProfile | None = None,
     ):
-        self.spec = spec or get_mujoco_reward_spec(config.env_id).with_partial_profile(config.partial_profile)
+        self.profile = profile or MuJoCoEnvironmentProfile()
+        self.spec = spec or self.profile.reward_spec(config)
         run_name = config.run_name or self.default_run_name(config, self.spec)
         variant_name = config.variant_name or config.mode
         super().__init__(replace(config, run_name=run_name, variant_name=variant_name), custom_partial)
@@ -254,18 +246,18 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
     def train_true_or_partial(self) -> RunResult:
         config = self.config
         run_dir = self.ensure_run_dir()
-        hyperparams = mujoco_ppo_hyperparams(config)
+        hyperparams = self.profile.ppo_hyperparams(config)
 
         if config.mode == "true":
-            env_fn = lambda: make_mujoco_raw_env(config.env_id)
+            env_fn = lambda: self.profile.make_raw_env(config.env_id)
         elif config.mode == "partial":
-            runtime = MuJoCoLearnedRewardRuntime(spec=self.spec, composition="partial", custom_partial=self.custom_partial)
-            env_fn = lambda: MuJoCoPreferenceRewardWrapper(make_mujoco_raw_env(config.env_id), runtime)
+            runtime = self.profile.learned_runtime(self.spec, "partial", self.custom_partial)
+            env_fn = lambda: self.profile.preference_wrapper(self.profile.make_raw_env(config.env_id), runtime)
         else:
             raise ValueError(f"Unsupported mode for this path: {config.mode}")
 
-        train_env = make_mujoco_vecnormalize_env(env_fn, config.n_envs, run_dir / "monitor")
-        eval_env = make_mujoco_eval_env(config.env_id, train_env)
+        train_env = self.profile.make_vecnormalize_env(env_fn, config.n_envs, run_dir / "monitor")
+        eval_env = self.profile.make_eval_env(config.env_id, train_env)
         callbacks = self.build_callbacks(run_dir, train_env, eval_env)
         model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **hyperparams)
         learn_policy(
@@ -281,12 +273,12 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
     def train_preference_mode(self) -> RunResult:
         config = self.config
         run_dir = self.ensure_run_dir()
-        hyperparams = mujoco_ppo_hyperparams(config)
+        hyperparams = self.profile.ppo_hyperparams(config)
 
-        runtime = MuJoCoLearnedRewardRuntime(
-            spec=self.spec,
-            composition=config.mode,
-            custom_partial=self.custom_partial,
+        runtime = self.profile.learned_runtime(
+            self.spec,
+            config.mode,
+            self.custom_partial,
             target_mean=config.model_reward_target_mean,
             target_std=config.model_reward_target_std,
             reward_min=config.model_reward_min,
@@ -295,22 +287,18 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
             normalize=config.normalize_model_reward,
             include_partial_feature=include_partial_feature(config),
         )
-        train_env = make_mujoco_vecnormalize_env(
-            lambda: MuJoCoPreferenceRewardWrapper(make_mujoco_raw_env(config.env_id), runtime),
+        train_env = self.profile.make_vecnormalize_env(
+            lambda: self.profile.preference_wrapper(self.profile.make_raw_env(config.env_id), runtime),
             config.n_envs,
             run_dir / "monitor",
         )
-        eval_env = make_mujoco_eval_env(config.env_id, train_env)
+        eval_env = self.profile.make_eval_env(config.env_id, train_env)
         callbacks = self.build_callbacks(run_dir, train_env, eval_env)
         model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **hyperparams)
 
-        probe_env = make_mujoco_raw_env(config.env_id)
-        action_shape = probe_env.action_space.shape
-        input_size = probe_env.observation_space.shape[0] + action_shape[0] + 1
-        probe_env.close()
-
+        input_size = self.profile.reward_model_input_size(config.env_id)
         reward_model = make_reward_models(input_size, config)
-        convert_traj = make_mujoco_trajectory_converter(runtime.include_partial_feature)
+        convert_traj = self.profile.trajectory_converter(runtime.include_partial_feature)
         total_queries = RlhfTrainer(
             config,
             model,
@@ -318,7 +306,7 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
             callbacks,
             reward_model,
             convert_traj,
-            lambda round_index, collection_steps: collect_mujoco_policy_trajectories(
+            lambda round_index, collection_steps: self.profile.collect_policy_trajectories(
                 model,
                 train_env,
                 env_id=config.env_id,
@@ -340,7 +328,7 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
         eval_env: VecNormalize,
         run_dir: Path,
         synthetic_queries: int,
-        runtime: MuJoCoLearnedRewardRuntime | None = None,
+        runtime=None,
     ) -> RunResult:
         config = self.config
         paths = BackendRunPaths(run_dir)
@@ -381,7 +369,7 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
             model,
             eval_env,
             run_dir,
-            load_mujoco_eval_env,
+            self.profile.load_eval_env,
             PPO.load,
             load_best_stats=True,
         )
