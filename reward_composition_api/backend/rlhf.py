@@ -5,17 +5,15 @@ from typing import Callable
 from reward_composition_api.wrappers.trajectory_buffering import Trajectory
 from reward_model.reward_model import RewardModel
 
-from .common import (
+from reward_composition_api.reward_models import (
     choose_query_pairs,
-    learn_policy,
-    policy_training_schedule,
     pretrain_reward_model,
-    query_schedule,
     rate_pairs_from_true_reward,
     reward_model_io_stats,
     train_preference_reward_ensemble,
     train_preference_reward_model,
 )
+from .common import learn_policy, policy_training_schedule, query_schedule
 
 
 class RlhfTrainer:
