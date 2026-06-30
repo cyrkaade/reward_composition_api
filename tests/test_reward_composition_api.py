@@ -11,7 +11,7 @@ from reward_composition_api.cli import main as cli_main
 from reward_composition_api.config import ExperimentConfig, SummaryConfig, SweepConfig, normalize_experiment_config
 from reward_composition_api.errors import ConfigError
 from reward_composition_api.parsing import parse_int_tuple, parse_key_value_mapping
-from reward_composition_api.partials import build_builtin_registry
+from reward_composition_api.partial_reward import build_builtin_registry
 from reward_composition_api.registry import load_partial_reference
 from reward_composition_api.summaries import summarize_runs
 from reward_composition_api.sweeps import plan_sweep, run_sweep
