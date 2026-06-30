@@ -14,11 +14,15 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from local_gym.classes.atari_reward_specs import AtariRewardSpec
 from reward_composition_api.config import ExperimentConfig
 from reward_composition_api.data_structures import Trajectory
+from reward_composition_api.environments.vectorized import (
+    load_vecnormalize_eval_env,
+    make_raw_eval_env as make_common_raw_eval_env,
+    normalize_obs,
+)
 from reward_composition_api.registry import PartialSpec
+from reward_composition_api.wrappers.preference_reward import BaseLearnedRewardRuntime, BasePreferenceRewardWrapper
 from reward_model.reward_model import RewardModel
 
-from .common import load_vecnormalize_eval_env, make_raw_eval_env as make_common_raw_eval_env, normalize_obs
-from .learned_rewards import BaseLearnedRewardRuntime, BasePreferenceRewardWrapper
 from reward_composition_api.wrappers.atari import AtariFireResetEnv
 
 

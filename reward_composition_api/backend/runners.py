@@ -17,39 +17,35 @@ from reward_composition_api.environments.atari import AtariEnvironmentProfile
 from reward_composition_api.environments.box2d_env import Box2DEnvironmentProfile
 from reward_composition_api.environments.gymnasium_env import GymnasiumEnvironmentProfile
 from reward_composition_api.environments.mujoco import MuJoCoEnvironmentProfile
-from reward_composition_api.registry import PartialSpec
-from reward_composition_api.results import RunResult
-from reward_model.reward_model import RewardModel
-
-from .common import (
-    SaveVecNormalizeOnBest,
-    include_partial_feature,
-    learn_policy,
-    resolve_custom_partial,
-)
-from .atari_evaluation import (
+from reward_composition_api.evaluation.atari import (
     AtariComponentEvalCallback,
     _component_keys as atari_component_keys,
     evaluate_atari_components,
     write_atari_component_summary,
 )
-from .gym_evaluation import (
+from reward_composition_api.evaluation.gymnasium import (
     GymComponentEvalCallback,
     component_keys as gym_component_keys,
     evaluate_gym_components,
     write_gym_component_summary,
 )
-from .mujoco_evaluation import (
+from reward_composition_api.evaluation.mujoco import (
     MuJoCoComponentEvalCallback,
     _component_keys as mujoco_component_keys,
     evaluate_mujoco_components,
     write_mujoco_component_summary,
 )
-from .reporting import (
+from reward_composition_api.evaluation.reporting import (
     BackendRunPaths,
     report_eval_curve,
     select_final_policy,
 )
+from reward_composition_api.partial_reward import include_partial_feature, resolve_custom_partial
+from reward_composition_api.registry import PartialSpec
+from reward_composition_api.results import RunResult
+from reward_composition_api.training import SaveVecNormalizeOnBest, learn_policy
+from reward_model.reward_model import RewardModel
+
 from .rlhf import RlhfTrainer
 
 

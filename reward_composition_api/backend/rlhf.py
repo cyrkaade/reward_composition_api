@@ -13,7 +13,7 @@ from reward_composition_api.reward_models import (
     train_preference_reward_ensemble,
     train_preference_reward_model,
 )
-from .common import learn_policy, policy_training_schedule, query_schedule
+from reward_composition_api.training import learn_policy, policy_training_schedule, query_schedule
 
 
 class RlhfTrainer:

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.partial_reward import resolve_custom_partial
 from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
 
-from .common import resolve_custom_partial
 from .runners import GymExperimentRunner
 
 
