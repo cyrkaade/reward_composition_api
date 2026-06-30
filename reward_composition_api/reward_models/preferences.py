@@ -8,7 +8,7 @@ import numpy as np
 import torch as th
 from torch.optim import Adam
 
-from reward_composition_api.wrappers.trajectory_buffering import Trajectory
+from reward_composition_api.data_structures import Trajectory
 from reward_model.preferences.fragmenter import Fragmenter
 from reward_model.preferences.preference import Preference
 from reward_model.reward_model import (

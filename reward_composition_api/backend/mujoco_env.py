@@ -13,8 +13,8 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec
 from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.data_structures import Trajectory
 from reward_composition_api.registry import PartialSpec
-from reward_composition_api.wrappers.trajectory_buffering import Trajectory
 from reward_model.reward_model import RewardModel
 
 from .common import load_vecnormalize_eval_env, make_raw_eval_env as make_common_raw_eval_env, normalize_obs

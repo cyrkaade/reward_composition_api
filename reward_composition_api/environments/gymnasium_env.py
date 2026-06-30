@@ -20,8 +20,8 @@ from reward_composition_api.backend.gym_spaces import (
     should_normalize_observation,
 )
 from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.data_structures import Trajectory
 from reward_composition_api.registry import PartialSpec
-from reward_composition_api.wrappers.trajectory_buffering import Trajectory
 
 from reward_composition_api.backend.gym_env import GymLearnedRewardRuntime, GymPreferenceRewardWrapper
 

@@ -7,8 +7,8 @@ from stable_baselines3.common.vec_env import VecNormalize
 
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec, get_mujoco_reward_spec
 from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.data_structures import Trajectory
 from reward_composition_api.registry import PartialSpec
-from reward_composition_api.wrappers.trajectory_buffering import Trajectory
 
 from reward_composition_api.backend import mujoco_env as plumbing
 
