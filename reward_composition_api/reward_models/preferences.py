@@ -9,7 +9,6 @@ import torch as th
 from torch.optim import Adam
 
 from reward_composition_api.data_structures import Trajectory
-from reward_model.preferences.fragmenter import Fragmenter
 from reward_model.preferences.preference import Preference
 from reward_model.reward_model import (
     DeltaLoss,
@@ -29,8 +28,13 @@ def rate_pairs_from_true_reward(pairs: list[tuple[Trajectory, Trajectory]]) -> l
 
 
 def fragment_trajectories(trajectories: list[Trajectory], fragment_length: int, continuous: bool) -> list[Trajectory]:
-    fragmenter = Fragmenter(continuous=continuous, fragment_length=fragment_length, oversampling_rate=1.0)
-    return fragmenter.fragment_trajectories(trajectories)
+    fragments = []
+    for trajectory in trajectories:
+        states = trajectory.get_states()
+        for start_idx in range(0, len(states), fragment_length):
+            if start_idx + fragment_length < len(states):
+                fragments.append(Trajectory(states[start_idx : start_idx + fragment_length]))
+    return fragments
 
 
 def random_query_pairs(fragments: list[Trajectory], query_count: int) -> list[tuple[Trajectory, Trajectory]]:
