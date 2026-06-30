@@ -36,7 +36,7 @@ from reward_composition_api.evaluation.mujoco import (
     write_mujoco_component_summary,
 )
 from reward_composition_api.evaluation.reporting import (
-    BackendRunPaths,
+    RunPaths,
     report_eval_curve,
     select_final_policy,
 )
@@ -149,7 +149,7 @@ class BaseExperimentRunner:
             "reward_composition": runtime.composition,
         }
 
-    def write_metadata(self, paths: BackendRunPaths, metadata: dict) -> Path:
+    def write_metadata(self, paths: RunPaths, metadata: dict) -> Path:
         metadata_path = paths.metadata
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         return metadata_path
@@ -301,7 +301,7 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
         runtime=None,
     ) -> RunResult:
         config = self.config
-        paths = BackendRunPaths(run_dir)
+        paths = RunPaths(run_dir)
         model.save(paths.final_model)
         train_env.save(paths.vecnormalize)
 
@@ -540,7 +540,7 @@ class GymExperimentRunner(BaseExperimentRunner):
         runtime=None,
     ) -> RunResult:
         config = self.config
-        paths = BackendRunPaths(run_dir)
+        paths = RunPaths(run_dir)
         model.save(paths.final_model)
         vecnormalize_path = None
         if isinstance(train_env, VecNormalize):
@@ -764,7 +764,7 @@ class AtariExperimentRunner(BaseExperimentRunner):
         runtime=None,
     ) -> RunResult:
         config = self.config
-        paths = BackendRunPaths(run_dir)
+        paths = RunPaths(run_dir)
         model.save(paths.final_model)
         train_env.save(paths.vecnormalize)
 

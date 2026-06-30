@@ -11,7 +11,7 @@ from .curves import load_eval_curve, plot_true_reward_curve
 
 
 @dataclass(frozen=True)
-class BackendRunPaths:
+class RunPaths:
     run_dir: Path
 
     @property
@@ -146,7 +146,7 @@ def select_final_policy(
     load_policy_fn,
     load_best_stats: bool,
 ):
-    paths = BackendRunPaths(run_dir)
+    paths = RunPaths(run_dir)
     final_policy = model
     final_eval_env = eval_env
     if config.final_policy == "best" and paths.best_model.exists():
