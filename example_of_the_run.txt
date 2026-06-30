@@ -2,11 +2,11 @@ $exp = "hopper_query_budget_100_1000_10000_active_epochs_200k_seed21"
 $seed = 21
 
 foreach ($q in 100, 1000, 10000) {
-  python experiments\run_generic_experiment.py `
+  python -m reward_composition_api train `
     --suite mujoco `
     --env-id Hopper-v5 `
-    --experiment-name $exp `
-    --method vanilla `
+    --log-dir "logs/$exp" `
+    --mode feedback `
     --run-name "hopper_vanilla_q${q}_200k_seed${seed}" `
     --seed $seed `
     --timesteps 200000 `
@@ -27,12 +27,12 @@ foreach ($q in 100, 1000, 10000) {
     --final-eval-episodes 100
 }
 
-python experiments\run_generic_experiment.py `
+python -m reward_composition_api train `
   --suite mujoco `
   --env-id Hopper-v5 `
-  --experiment-name $exp `
-  --closed-form-file hopper_true_reward `
-  --method partial `
+  --log-dir "logs/$exp" `
+  --partial hopper_true_reward `
+  --mode partial `
   --run-name "hopper_true_reward_200k_seed${seed}" `
   --seed $seed `
   --timesteps 200000 `
