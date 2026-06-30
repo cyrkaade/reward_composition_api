@@ -14,9 +14,6 @@ from . import mujoco_runtime as plumbing
 
 
 class MuJoCoEnvironmentProfile:
-    collection_label = "steps"
-    continuous_actions = True
-
     def reward_spec(self, config: ExperimentConfig) -> MuJoCoRewardSpec:
         return get_mujoco_reward_spec(config.env_id).with_partial_profile(config.partial_profile)
 

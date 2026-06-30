@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import gymnasium as gym
 
@@ -405,9 +405,3 @@ def _validate_common_numeric(timesteps: int, rlhf_rounds: int, query_budget: int
     if fragment_length <= 0:
         raise ConfigError("fragment_length must be greater than zero")
 
-
-def csv_mean(values: Iterable[float | int | None]) -> float | None:
-    clean = [float(value) for value in values if value is not None]
-    if not clean:
-        return None
-    return sum(clean) / len(clean)

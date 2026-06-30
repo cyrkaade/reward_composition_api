@@ -27,8 +27,6 @@ from .vectorized import load_vecnormalize_eval_env, make_raw_eval_env as make_co
 
 
 class GymnasiumEnvironmentProfile:
-    collection_label = "Gym steps"
-
     def make_raw_env(self, env_id: str):
         return gym.make(env_id)
 

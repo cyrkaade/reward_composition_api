@@ -65,14 +65,6 @@ class PairwiseLoss(th.nn.Module):
         loss = -th.sum(th.mul(probs, target_stack), dim=0)
         return loss
     
-class KullbackLeiblerDivergenceLoss(th.nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        loss = th.kl_div(th.sigmoid(input), th.sigmoid(target), reduction=1)
-        return loss
-    
 class RegularizationLoss():
     def __init__(self, regularization_type='L1', lambda_reg=0.01):
         super().__init__()

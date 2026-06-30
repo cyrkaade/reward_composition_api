@@ -114,10 +114,6 @@ class LunarLanderFullPartial:
         return 1.0 if discrete_action in (1, 3) else 0.0
 
 
-def make_reward_function(name, continuous, **weights):
-    return LunarLanderFullPartial(continuous=continuous, **weights)
-
-
 def register(registry) -> None:
     registry.register(
         name="lunar_lander_full",

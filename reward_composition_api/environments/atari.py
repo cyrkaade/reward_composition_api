@@ -17,9 +17,6 @@ from . import atari_runtime as plumbing
 
 
 class AtariEnvironmentProfile:
-    collection_label = "Atari steps"
-    continuous_actions = False
-
     def setup(self, config: ExperimentConfig) -> None:
         plumbing.register_atari_envs()
         random.seed(config.seed)
