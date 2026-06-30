@@ -2,8 +2,8 @@ from __future__ import annotations
 
 
 class Trajectory:
-    def __init__(self, states=[]):
-        self.states = list(states)
+    def __init__(self, states=None):
+        self.states = list(states or [])
 
     def push_state(self, obs, act, done, info, true_rew, partial_rew):
         assert len(self.states) == 0 or not self.states[-1]["done"], "trying to push a state to a trajectory that is already done"
@@ -23,4 +23,4 @@ class Trajectory:
         return self.states
 
     def get_summed_reward(self):
-        return sum([state["rew"] for state in self.states])
+        return sum(state["rew"] for state in self.states)

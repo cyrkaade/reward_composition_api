@@ -8,7 +8,6 @@ import numpy as np
 import torch as th
 from gymnasium import spaces
 
-from local_gym.wrappers.lunar_lander_rewards_wrapper import LunarLanderSaveInfo
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec
 from reward_composition_api.config import ExperimentConfig
 from reward_composition_api.environments.atari_runtime import AtariLearnedRewardRuntime, AtariPreferenceRewardWrapper
@@ -20,6 +19,7 @@ from reward_composition_api.runners import GymExperimentRunner
 from reward_composition_api.runners.atari import run_atari_experiment
 from reward_composition_api.runners.gymnasium import run_gym_experiment
 from reward_composition_api.runners.mujoco import run_mujoco_experiment
+from reward_composition_api.wrappers.lunar_lander import LunarLanderSaveInfo
 
 
 class ConstantRewardModel(th.nn.Module):

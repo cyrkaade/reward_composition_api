@@ -1,4 +1,4 @@
-from local_gym.wrappers.buffering_wrapper import Trajectory
+from reward_composition_api.data_structures import Trajectory
 
 class Preference:
     def __init__(self, t1: Trajectory, t2: Trajectory, rating: float):
