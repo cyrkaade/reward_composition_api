@@ -13,7 +13,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from torch.optim import Adam
 
-from reward_composition_api.partials import build_builtin_registry
+from reward_composition_api.partial_reward import build_builtin_registry
 from reward_composition_api.registry import PartialSpec, load_partial_reference
 from reward_composition_api.wrappers.trajectory_buffering import Trajectory
 from reward_model.preferences.fragmenter import Fragmenter

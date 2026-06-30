@@ -26,7 +26,7 @@ from .config import (
 )
 from .errors import RewardCompositionError
 from .parsing import parse_int_tuple, parse_key_value_mapping
-from .partials import build_builtin_registry, partials_for_display
+from .partial_reward import build_builtin_registry, partials_for_display
 from .registry import load_partial_reference
 
 
