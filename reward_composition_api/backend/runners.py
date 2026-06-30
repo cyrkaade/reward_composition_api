@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import json
-import random
 from dataclasses import replace
 from pathlib import Path
 
-import numpy as np
-import torch as th
 from gymnasium import spaces
 from gymnasium.spaces.utils import flatdim
 from stable_baselines3 import PPO
@@ -14,9 +11,10 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalC
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import VecNormalize
 
-from local_gym.classes.atari_reward_specs import AtariRewardSpec, get_atari_reward_spec
+from local_gym.classes.atari_reward_specs import AtariRewardSpec
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec
 from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.environments.atari import AtariEnvironmentProfile
 from reward_composition_api.environments.mujoco import MuJoCoEnvironmentProfile
 from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
@@ -27,18 +25,6 @@ from .common import (
     include_partial_feature,
     learn_policy,
     resolve_custom_partial,
-)
-from .atari_env import (
-    AtariLearnedRewardRuntime,
-    AtariPreferenceRewardWrapper,
-    collect_policy_trajectories as collect_atari_policy_trajectories,
-    load_eval_env as load_atari_eval_env,
-    make_eval_env as make_atari_eval_env,
-    make_raw_env as make_atari_raw_env,
-    make_trajectory_converter as make_atari_trajectory_converter,
-    make_vecnormalize_env as make_atari_vecnormalize_env,
-    ppo_hyperparams as atari_ppo_hyperparams,
-    register_atari_envs,
 )
 from .atari_evaluation import (
     AtariComponentEvalCallback,
@@ -646,8 +632,10 @@ class AtariExperimentRunner(BaseExperimentRunner):
         config: ExperimentConfig,
         spec: AtariRewardSpec | None = None,
         custom_partial: PartialSpec | None = None,
+        profile: AtariEnvironmentProfile | None = None,
     ):
-        self.spec = spec or get_atari_reward_spec(config.env_id)
+        self.profile = profile or AtariEnvironmentProfile()
+        self.spec = spec or self.profile.reward_spec(config)
         run_name = config.run_name or self.default_run_name(config, self.spec)
         variant_name = config.variant_name or config.mode
         super().__init__(replace(config, run_name=run_name, variant_name=variant_name), custom_partial)
@@ -659,17 +647,14 @@ class AtariExperimentRunner(BaseExperimentRunner):
         return f"{spec.slug}_{variant}_{steps}_seed{config.seed}"
 
     def setup(self) -> None:
-        register_atari_envs()
-        random.seed(self.config.seed)
-        np.random.seed(self.config.seed)
-        th.manual_seed(self.config.seed)
+        self.profile.setup(self.config)
 
     def build_callbacks(self, run_dir: Path, train_env: VecNormalize, eval_env: VecNormalize):
         component_callback = AtariComponentEvalCallback(
             run_dir / "eval" / "component_evaluations.csv",
             self.config.env_id,
             self.spec,
-            make_env=make_atari_raw_env,
+            make_env=self.profile.make_raw_env,
             partial_source=self.config.partial_source,
             custom_partial=self.custom_partial,
             eval_freq=self.eval_freq(),
@@ -683,27 +668,25 @@ class AtariExperimentRunner(BaseExperimentRunner):
         run_dir = self.ensure_run_dir()
 
         if config.mode == "true":
-            env_fn = lambda: make_atari_raw_env(config.env_id)
+            env_fn = lambda: self.profile.make_raw_env(config.env_id)
         elif config.mode == "partial":
-            probe_env = make_atari_raw_env(config.env_id)
-            action_n = int(probe_env.action_space.n)
-            probe_env.close()
-            runtime = AtariLearnedRewardRuntime(
-                spec=self.spec,
-                composition="partial",
-                action_n=action_n,
+            _, action_n = self.profile.probe_spaces(config.env_id)
+            runtime = self.profile.learned_runtime(
+                self.spec,
+                "partial",
+                action_n,
+                self.custom_partial,
                 partial_source=config.partial_source,
-                custom_partial=self.custom_partial,
             )
-            env_fn = lambda: AtariPreferenceRewardWrapper(make_atari_raw_env(config.env_id), runtime)
+            env_fn = lambda: self.profile.preference_wrapper(self.profile.make_raw_env(config.env_id), runtime)
         else:
             raise ValueError(f"Unsupported mode for this path: {config.mode}")
 
-        train_env = make_atari_vecnormalize_env(env_fn, config.n_envs, run_dir / "monitor")
-        eval_env = make_atari_eval_env(config.env_id, train_env)
+        train_env = self.profile.make_vecnormalize_env(env_fn, config.n_envs, run_dir / "monitor")
+        eval_env = self.profile.make_eval_env(config.env_id, train_env)
         callbacks = self.build_callbacks(run_dir, train_env, eval_env)
 
-        model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **atari_ppo_hyperparams(config))
+        model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **self.profile.ppo_hyperparams(config))
         learn_policy(
             model,
             config.timesteps,
@@ -718,17 +701,14 @@ class AtariExperimentRunner(BaseExperimentRunner):
         config = self.config
         run_dir = self.ensure_run_dir()
 
-        probe_env = make_atari_raw_env(config.env_id)
-        obs_size = int(np.prod(probe_env.observation_space.shape))
-        action_n = int(probe_env.action_space.n)
-        probe_env.close()
+        obs_size, action_n = self.profile.probe_spaces(config.env_id)
 
-        runtime = AtariLearnedRewardRuntime(
-            spec=self.spec,
-            composition=config.mode,
-            action_n=action_n,
+        runtime = self.profile.learned_runtime(
+            self.spec,
+            config.mode,
+            action_n,
+            self.custom_partial,
             partial_source=config.partial_source,
-            custom_partial=self.custom_partial,
             target_mean=config.model_reward_target_mean,
             target_std=config.model_reward_target_std,
             reward_min=config.model_reward_min,
@@ -737,17 +717,17 @@ class AtariExperimentRunner(BaseExperimentRunner):
             normalize=config.normalize_model_reward,
             include_partial_feature=include_partial_feature(config),
         )
-        train_env = make_atari_vecnormalize_env(
-            lambda: AtariPreferenceRewardWrapper(make_atari_raw_env(config.env_id), runtime),
+        train_env = self.profile.make_vecnormalize_env(
+            lambda: self.profile.preference_wrapper(self.profile.make_raw_env(config.env_id), runtime),
             config.n_envs,
             run_dir / "monitor",
         )
-        eval_env = make_atari_eval_env(config.env_id, train_env)
+        eval_env = self.profile.make_eval_env(config.env_id, train_env)
         callbacks = self.build_callbacks(run_dir, train_env, eval_env)
-        model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **atari_ppo_hyperparams(config))
+        model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **self.profile.ppo_hyperparams(config))
 
         reward_model = make_reward_models(obs_size + action_n + 1, config)
-        convert_traj = make_atari_trajectory_converter(action_n, runtime.include_partial_feature)
+        convert_traj = self.profile.trajectory_converter(action_n, runtime.include_partial_feature)
         total_queries = RlhfTrainer(
             config,
             model,
@@ -755,7 +735,7 @@ class AtariExperimentRunner(BaseExperimentRunner):
             callbacks,
             reward_model,
             convert_traj,
-            lambda round_index, collection_steps: collect_atari_policy_trajectories(
+            lambda round_index, collection_steps: self.profile.collect_policy_trajectories(
                 model,
                 train_env,
                 env_id=config.env_id,
@@ -785,7 +765,7 @@ class AtariExperimentRunner(BaseExperimentRunner):
         eval_env: VecNormalize,
         run_dir: Path,
         synthetic_queries: int,
-        runtime: AtariLearnedRewardRuntime | None = None,
+        runtime=None,
     ) -> RunResult:
         config = self.config
         paths = BackendRunPaths(run_dir)
@@ -808,7 +788,7 @@ class AtariExperimentRunner(BaseExperimentRunner):
             model,
             config.env_id,
             self.spec,
-            make_env=make_atari_raw_env,
+            make_env=self.profile.make_raw_env,
             partial_source=config.partial_source,
             custom_partial=self.custom_partial,
             stats_source=train_env,
@@ -822,7 +802,7 @@ class AtariExperimentRunner(BaseExperimentRunner):
             model,
             eval_env,
             run_dir,
-            load_atari_eval_env,
+            self.profile.load_eval_env,
             PPO.load,
             load_best_stats=True,
         )
@@ -838,7 +818,7 @@ class AtariExperimentRunner(BaseExperimentRunner):
             final_policy,
             config.env_id,
             self.spec,
-            make_env=make_atari_raw_env,
+            make_env=self.profile.make_raw_env,
             partial_source=config.partial_source,
             custom_partial=self.custom_partial,
             stats_source=final_eval_env,
