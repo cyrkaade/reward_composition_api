@@ -17,6 +17,10 @@ from reward_composition_api.backend.gym_env import GymLearnedRewardRuntime, GymP
 from reward_composition_api.backend.gymnasium import run_gym_experiment
 from reward_composition_api.backend.mujoco import run_mujoco_experiment
 from reward_composition_api.backend.mujoco_env import MuJoCoLearnedRewardRuntime, MuJoCoPreferenceRewardWrapper
+from reward_composition_api.backend.runners import GymExperimentRunner
+from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.environments.box2d_env import Box2DEnvironmentProfile
+from reward_composition_api.environments.gymnasium_env import GymnasiumEnvironmentProfile
 
 
 class ConstantRewardModel(th.nn.Module):
@@ -211,6 +215,13 @@ class LearnedRewardWrapperTest(unittest.TestCase):
 
         self.assertIsInstance(lunar_env, LunarLanderSaveInfo)
         self.assertNotIsInstance(cartpole_env, LunarLanderSaveInfo)
+
+    def test_gym_runner_selects_box2d_profile_for_box2d_envs(self):
+        box2d_profile = GymExperimentRunner.default_profile(ExperimentConfig(suite="box2d", env_id="LunarLander-v3"))
+        gym_profile = GymExperimentRunner.default_profile(ExperimentConfig(suite="gym", env_id="CartPole-v1"))
+
+        self.assertIsInstance(box2d_profile, Box2DEnvironmentProfile)
+        self.assertIsInstance(gym_profile, GymnasiumEnvironmentProfile)
 
 
 class Tracker:

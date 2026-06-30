@@ -5,7 +5,6 @@ from dataclasses import replace
 from pathlib import Path
 
 from gymnasium import spaces
-from gymnasium.spaces.utils import flatdim
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalCallback, StopTrainingOnRewardThreshold
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -13,8 +12,10 @@ from stable_baselines3.common.vec_env import VecNormalize
 
 from local_gym.classes.atari_reward_specs import AtariRewardSpec
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec
-from reward_composition_api.config import ExperimentConfig
+from reward_composition_api.config import BOX2D_SUITE, ExperimentConfig
 from reward_composition_api.environments.atari import AtariEnvironmentProfile
+from reward_composition_api.environments.box2d_env import Box2DEnvironmentProfile
+from reward_composition_api.environments.gymnasium_env import GymnasiumEnvironmentProfile
 from reward_composition_api.environments.mujoco import MuJoCoEnvironmentProfile
 from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
@@ -32,24 +33,12 @@ from .atari_evaluation import (
     evaluate_atari_components,
     write_atari_component_summary,
 )
-from .gym_env import (
-    GymLearnedRewardRuntime,
-    GymPreferenceRewardWrapper,
-    collect_policy_trajectories as collect_gym_policy_trajectories,
-    load_eval_env as load_gym_eval_env,
-    make_eval_env as make_gym_eval_env,
-    make_raw_env as make_gym_raw_env,
-    make_train_env as make_gym_train_env,
-    make_trajectory_converter as make_gym_trajectory_converter,
-    ppo_hyperparams as gym_ppo_hyperparams,
-)
 from .gym_evaluation import (
     GymComponentEvalCallback,
     component_keys as gym_component_keys,
     evaluate_gym_components,
     write_gym_component_summary,
 )
-from .gym_spaces import should_normalize_observation
 from .mujoco_evaluation import (
     MuJoCoComponentEvalCallback,
     _component_keys as mujoco_component_keys,
@@ -411,10 +400,22 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
 
 
 class GymExperimentRunner(BaseExperimentRunner):
-    def __init__(self, config: ExperimentConfig, custom_partial: PartialSpec | None = None):
+    def __init__(
+        self,
+        config: ExperimentConfig,
+        custom_partial: PartialSpec | None = None,
+        profile: GymnasiumEnvironmentProfile | None = None,
+    ):
+        self.profile = profile or self.default_profile(config)
         run_name = config.run_name or self.default_run_name(config)
         variant_name = config.variant_name or config.mode
         super().__init__(replace(config, run_name=run_name, variant_name=variant_name), custom_partial)
+
+    @staticmethod
+    def default_profile(config: ExperimentConfig):
+        if config.suite == BOX2D_SUITE or str(config.env_id).startswith(("LunarLander", "BipedalWalker", "CarRacing")):
+            return Box2DEnvironmentProfile()
+        return GymnasiumEnvironmentProfile()
 
     @staticmethod
     def slugify(env_id: str) -> str:
@@ -430,7 +431,7 @@ class GymExperimentRunner(BaseExperimentRunner):
         component_callback = GymComponentEvalCallback(
             run_dir / "eval" / "component_evaluations.csv",
             self.config.env_id,
-            make_env=make_gym_raw_env,
+            make_env=self.profile.make_raw_env,
             custom_partial=self.custom_partial,
             eval_freq=self.eval_freq(),
             n_eval_episodes=self.config.n_eval_episodes,
@@ -441,29 +442,29 @@ class GymExperimentRunner(BaseExperimentRunner):
     def train_true_or_partial(self) -> RunResult:
         config = self.config
         run_dir = self.ensure_run_dir()
-        probe_env = make_gym_raw_env(config.env_id)
-        normalize = should_normalize_observation(probe_env.observation_space)
-        hyperparams = gym_ppo_hyperparams(probe_env, config)
+        probe_env = self.profile.make_raw_env(config.env_id)
+        normalize = self.profile.should_normalize_observation(probe_env.observation_space)
+        hyperparams = self.profile.ppo_hyperparams(probe_env, config)
         observation_space = probe_env.observation_space
         action_space = probe_env.action_space
         probe_env.close()
 
         if config.mode == "true":
-            env_fn = lambda: make_gym_raw_env(config.env_id)
+            env_fn = lambda: self.profile.make_raw_env(config.env_id)
         elif config.mode == "partial":
-            runtime = GymLearnedRewardRuntime(
-                env_id=config.env_id,
-                composition="partial",
-                observation_space=observation_space,
-                action_space=action_space,
-                custom_partial=self.custom_partial,
+            runtime = self.profile.learned_runtime(
+                config.env_id,
+                "partial",
+                observation_space,
+                action_space,
+                self.custom_partial,
             )
-            env_fn = lambda: GymPreferenceRewardWrapper(make_gym_raw_env(config.env_id), runtime)
+            env_fn = lambda: self.profile.preference_wrapper(self.profile.make_raw_env(config.env_id), runtime)
         else:
             raise ValueError(f"Unsupported mode for this path: {config.mode}")
 
-        train_env = make_gym_train_env(env_fn, config.n_envs, run_dir / "monitor", normalize)
-        eval_env = make_gym_eval_env(config.env_id, train_env)
+        train_env = self.profile.make_train_env(env_fn, config.n_envs, run_dir / "monitor", normalize)
+        eval_env = self.profile.make_eval_env(config.env_id, train_env)
         callbacks = self.build_callbacks(run_dir, train_env, eval_env)
         model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **hyperparams)
         learn_policy(
@@ -479,20 +480,20 @@ class GymExperimentRunner(BaseExperimentRunner):
     def train_preference_mode(self) -> RunResult:
         config = self.config
         run_dir = self.ensure_run_dir()
-        probe_env = make_gym_raw_env(config.env_id)
-        normalize = should_normalize_observation(probe_env.observation_space)
-        hyperparams = gym_ppo_hyperparams(probe_env, config)
+        probe_env = self.profile.make_raw_env(config.env_id)
+        normalize = self.profile.should_normalize_observation(probe_env.observation_space)
+        hyperparams = self.profile.ppo_hyperparams(probe_env, config)
         observation_space = probe_env.observation_space
         action_space = probe_env.action_space
-        reward_model_input_size = flatdim(observation_space) + flatdim(action_space) + 1
+        reward_model_input_size = self.profile.reward_model_input_size(observation_space, action_space)
         probe_env.close()
 
-        runtime = GymLearnedRewardRuntime(
-            env_id=config.env_id,
-            composition=config.mode,
-            observation_space=observation_space,
-            action_space=action_space,
-            custom_partial=self.custom_partial,
+        runtime = self.profile.learned_runtime(
+            config.env_id,
+            config.mode,
+            observation_space,
+            action_space,
+            self.custom_partial,
             target_mean=config.model_reward_target_mean,
             target_std=config.model_reward_target_std,
             reward_min=config.model_reward_min,
@@ -501,18 +502,18 @@ class GymExperimentRunner(BaseExperimentRunner):
             normalize=config.normalize_model_reward,
             include_partial_feature=include_partial_feature(config),
         )
-        train_env = make_gym_train_env(
-            lambda: GymPreferenceRewardWrapper(make_gym_raw_env(config.env_id), runtime),
+        train_env = self.profile.make_train_env(
+            lambda: self.profile.preference_wrapper(self.profile.make_raw_env(config.env_id), runtime),
             config.n_envs,
             run_dir / "monitor",
             normalize,
         )
-        eval_env = make_gym_eval_env(config.env_id, train_env)
+        eval_env = self.profile.make_eval_env(config.env_id, train_env)
         callbacks = self.build_callbacks(run_dir, train_env, eval_env)
         model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **hyperparams)
 
         reward_model = make_reward_models(reward_model_input_size, config)
-        convert_traj = make_gym_trajectory_converter(observation_space, action_space, runtime.include_partial_feature)
+        convert_traj = self.profile.trajectory_converter(observation_space, action_space, runtime.include_partial_feature)
         total_queries = RlhfTrainer(
             config,
             model,
@@ -520,7 +521,7 @@ class GymExperimentRunner(BaseExperimentRunner):
             callbacks,
             reward_model,
             convert_traj,
-            lambda round_index, collection_steps: collect_gym_policy_trajectories(
+            lambda round_index, collection_steps: self.profile.collect_policy_trajectories(
                 model,
                 train_env,
                 env_id=config.env_id,
@@ -541,7 +542,7 @@ class GymExperimentRunner(BaseExperimentRunner):
         eval_env,
         run_dir: Path,
         synthetic_queries: int,
-        runtime: GymLearnedRewardRuntime | None = None,
+        runtime=None,
     ) -> RunResult:
         config = self.config
         paths = BackendRunPaths(run_dir)
@@ -565,7 +566,7 @@ class GymExperimentRunner(BaseExperimentRunner):
         final_stats = evaluate_gym_components(
             model,
             config.env_id,
-            make_env=make_gym_raw_env,
+            make_env=self.profile.make_raw_env,
             custom_partial=self.custom_partial,
             stats_source=train_env,
             n_eval_episodes=config.final_eval_episodes,
@@ -578,7 +579,7 @@ class GymExperimentRunner(BaseExperimentRunner):
             model,
             eval_env,
             run_dir,
-            load_gym_eval_env,
+            self.profile.load_eval_env,
             PPO.load,
             load_best_stats=isinstance(train_env, VecNormalize),
         )
@@ -593,7 +594,7 @@ class GymExperimentRunner(BaseExperimentRunner):
         selected_stats = evaluate_gym_components(
             final_policy,
             config.env_id,
-            make_env=make_gym_raw_env,
+            make_env=self.profile.make_raw_env,
             custom_partial=self.custom_partial,
             stats_source=final_eval_env,
             n_eval_episodes=config.final_eval_episodes,
