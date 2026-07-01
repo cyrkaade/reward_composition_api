@@ -68,33 +68,7 @@ def dropout_active_learning_pairs(
                 returns = [model_return + partial for model_return, partial in zip(returns, partial_returns)]
             pred_returns.append(returns)
 
-    possible_indices = list(range(len(fragments)))
-    best_indices_batch = None
-    best_vars = None
-    best_score = -float("inf")
-
-    for _ in range(n_batches):
-        random.shuffle(possible_indices)
-        indices_batch = list(zip(possible_indices[::2], possible_indices[1::2]))
-        if not indices_batch:
-            continue
-        pair_returns = th.as_tensor(
-            [[(pred_returns[model_idx][i], pred_returns[model_idx][j]) for i, j in indices_batch] for model_idx in range(k)],
-            dtype=th.float32,
-        )
-        pred_preferences = preference_prob(pair_returns, 2)
-        variances = th.sum(th.var(pred_preferences, dim=0), dim=1).detach().cpu().numpy()
-        score = float(np.sum(variances))
-        if score > best_score:
-            best_score = score
-            best_indices_batch = indices_batch
-            best_vars = variances
-
-    if best_indices_batch is None or best_vars is None:
-        return random_query_pairs(fragments, query_count)
-
-    ranked = sorted(zip(best_indices_batch, best_vars), key=lambda item: item[1], reverse=True)
-    return [(fragments[i], fragments[j]) for (i, j), _ in ranked[:query_count]]
+    return _preference_variance_pairs(fragments, pred_returns, query_count, n_batches)
 
 
 def ensemble_active_learning_pairs(
@@ -119,6 +93,15 @@ def ensemble_active_learning_pairs(
                 returns = [model_return + partial for model_return, partial in zip(returns, partial_returns)]
             pred_returns.append(returns)
 
+    return _preference_variance_pairs(fragments, pred_returns, query_count, n_batches)
+
+
+def _preference_variance_pairs(
+    fragments: list[Trajectory],
+    pred_returns: list[list[float]],
+    query_count: int,
+    n_batches: int,
+) -> list[tuple[Trajectory, Trajectory]]:
     possible_indices = list(range(len(fragments)))
     best_indices_batch = None
     best_vars = None
@@ -132,7 +115,7 @@ def ensemble_active_learning_pairs(
         pair_returns = th.as_tensor(
             [
                 [(pred_returns[model_idx][i], pred_returns[model_idx][j]) for i, j in indices_batch]
-                for model_idx in range(len(reward_models))
+                for model_idx in range(len(pred_returns))
             ],
             dtype=th.float32,
         )
