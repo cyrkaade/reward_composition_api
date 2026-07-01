@@ -15,12 +15,10 @@ from reward_composition_api.data_structures import Trajectory
 from reward_composition_api.environments.trajectory_collector import PolicyTrajectoryCollector
 from reward_composition_api.registry import PartialSpec
 
-from .gymnasium_runtime import GymLearnedRewardRuntime, GymPreferenceRewardWrapper
+from .gymnasium_runtime import GymLearnedRewardRuntime, GymPreferenceRewardWrapper, reward_model_features
 from .spaces import (
-    action_features,
     action_for_space,
     is_image_space,
-    observation_features,
     policy_observation,
     should_normalize_observation,
 )
@@ -98,17 +96,17 @@ class GymnasiumEnvironmentProfile:
 
     def trajectory_converter(self, observation_space: spaces.Space, action_space: spaces.Space, include_partial_feature: bool):
         def convert(trajectory: Trajectory):
-            rows = []
-            for state in trajectory.states:
-                partial_feature = state["partial_rew"] if include_partial_feature else 0.0
-                rows.append(
-                    [
-                        *observation_features(observation_space, state["obs"]).tolist(),
-                        *action_features(action_space, state["act"]).tolist(),
-                        float(partial_feature),
-                    ]
-                )
-            return rows
+            return [
+                reward_model_features(
+                    observation_space,
+                    action_space,
+                    state["obs"],
+                    state["act"],
+                    state["partial_rew"],
+                    include_partial_feature,
+                ).tolist()
+                for state in trajectory.states
+            ]
 
         return convert
 

@@ -104,14 +104,7 @@ class MuJoCoPreferenceRewardWrapper(BasePreferenceRewardWrapper):
         return step.partial, step.components
 
     def model_features(self, observation, action, partial_reward: float) -> np.ndarray:
-        partial_feature = partial_reward if self.runtime.include_partial_feature else 0.0
-        return np.concatenate(
-            [
-                np.asarray(observation, dtype=np.float32).reshape(-1),
-                np.asarray(action, dtype=np.float32).reshape(-1),
-                np.asarray([partial_feature], dtype=np.float32),
-            ]
-        )
+        return reward_model_features(observation, action, partial_reward, self.runtime.include_partial_feature)
 
     def unsupported_composition_message(self) -> str:
         return f"Unsupported learned-reward composition: {self.runtime.composition}"
@@ -122,6 +115,17 @@ class MuJoCoPreferenceRewardWrapper(BasePreferenceRewardWrapper):
 
 def make_raw_env(env_id: str):
     return gym.make(env_id)
+
+
+def reward_model_features(observation, action, partial_reward: float, include_partial_feature: bool) -> np.ndarray:
+    partial_feature = partial_reward if include_partial_feature else 0.0
+    return np.concatenate(
+        [
+            np.asarray(observation, dtype=np.float32).reshape(-1),
+            np.asarray(action, dtype=np.float32).reshape(-1),
+            np.asarray([partial_feature], dtype=np.float32),
+        ]
+    )
 
 
 def make_raw_eval_env(env_id: str):
@@ -152,17 +156,15 @@ def load_eval_env(env_id: str, stats_path: Path) -> VecNormalize:
 
 def make_trajectory_converter(include_partial_feature: bool):
     def convert(trajectory: Trajectory):
-        rows = []
-        for state in trajectory.states:
-            partial_feature = state["partial_rew"] if include_partial_feature else 0.0
-            rows.append(
-                [
-                    *np.asarray(state["obs"], dtype=np.float32).reshape(-1).tolist(),
-                    *np.asarray(state["act"], dtype=np.float32).reshape(-1).tolist(),
-                    float(partial_feature),
-                ]
-            )
-        return rows
+        return [
+            reward_model_features(
+                state["obs"],
+                state["act"],
+                state["partial_rew"],
+                include_partial_feature,
+            ).tolist()
+            for state in trajectory.states
+        ]
 
     return convert
 

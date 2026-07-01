@@ -50,11 +50,29 @@ class GymPreferenceRewardWrapper(BasePreferenceRewardWrapper):
         return step.partial, step.components
 
     def model_features(self, observation, action, partial_reward: float) -> np.ndarray:
-        partial_feature = partial_reward if self.runtime.include_partial_feature else 0.0
-        return np.concatenate(
-            [
-                observation_features(self.runtime.observation_space, observation),
-                action_features(self.runtime.action_space, action),
-                np.asarray([partial_feature], dtype=np.float32),
-            ]
+        return reward_model_features(
+            self.runtime.observation_space,
+            self.runtime.action_space,
+            observation,
+            action,
+            partial_reward,
+            self.runtime.include_partial_feature,
         )
+
+
+def reward_model_features(
+    observation_space: spaces.Space,
+    action_space: spaces.Space,
+    observation,
+    action,
+    partial_reward: float,
+    include_partial_feature: bool,
+) -> np.ndarray:
+    partial_feature = partial_reward if include_partial_feature else 0.0
+    return np.concatenate(
+        [
+            observation_features(observation_space, observation),
+            action_features(action_space, action),
+            np.asarray([partial_feature], dtype=np.float32),
+        ]
+    )
