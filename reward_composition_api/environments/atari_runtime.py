@@ -19,6 +19,7 @@ from reward_composition_api.environments.vectorized import (
     make_raw_eval_env as make_common_raw_eval_env,
     normalize_obs,
 )
+from reward_composition_api.environments.trajectory_collector import PolicyTrajectoryCollector
 from reward_composition_api.registry import PartialSpec
 from reward_composition_api.wrappers.preference_reward import BaseLearnedRewardRuntime, BasePreferenceRewardWrapper
 from reward_composition_api.reward_models.reward_model import RewardModel
@@ -200,43 +201,20 @@ def collect_policy_trajectories(
     total_timesteps: int,
     seed: int,
 ) -> list[Trajectory]:
-    env = make_raw_env(env_id)
-    partial = custom_partial.create(env_id) if custom_partial else None
-    trajectories = []
-    trajectory = Trajectory()
-    obs, info = env.reset(seed=seed)
     tracker = spec.new_tracker()
-    tracker.reset(info)
-    if partial is not None:
-        partial.reset(info)
-    steps = 0
-
-    try:
-        while steps < total_timesteps:
-            model_obs = normalize_obs(stats_source, obs)
-            action, _ = model.predict(model_obs, deterministic=False)
-            action = int(np.asarray(action).reshape(-1)[0])
-            new_obs, true_reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            if partial is None:
-                partial_reward = tracker.step(info, true_reward=float(true_reward), partial_source=partial_source).partial
-            else:
-                partial_reward = partial.step(obs, action, new_obs, true_reward, terminated, truncated, info).partial
-            trajectory.push_state(new_obs, action, done, info, float(true_reward), partial_reward)
-            steps += 1
-
-            if done:
-                trajectories.append(trajectory)
-                trajectory = Trajectory()
-                obs, info = env.reset()
-                tracker.reset(info)
-                if partial is not None:
-                    partial.reset(info)
-            else:
-                obs = new_obs
-    finally:
-        env.close()
-
-    if trajectory.states:
-        trajectories.append(trajectory)
-    return trajectories
+    collector = PolicyTrajectoryCollector(
+        model=model,
+        stats_source=stats_source,
+        make_env=make_raw_env,
+        env_id=env_id,
+        custom_partial=custom_partial,
+        model_observation=normalize_obs,
+        action_converter=lambda _env, action: int(np.asarray(action).reshape(-1)[0]),
+        default_partial_reward=lambda _obs, _action, _new_obs, true_reward, _terminated, _truncated, info: tracker.step(
+            info,
+            true_reward=true_reward,
+            partial_source=partial_source,
+        ).partial,
+        reset_reward_state=tracker.reset,
+    )
+    return collector.rollout_trajectories(total_timesteps=total_timesteps, seed=seed)

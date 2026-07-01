@@ -12,6 +12,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from reward_composition_api.config import ExperimentConfig
 from reward_composition_api.data_structures import Trajectory
+from reward_composition_api.environments.trajectory_collector import PolicyTrajectoryCollector
 from reward_composition_api.registry import PartialSpec
 
 from .gymnasium_runtime import GymLearnedRewardRuntime, GymPreferenceRewardWrapper
@@ -120,40 +121,13 @@ class GymnasiumEnvironmentProfile:
         total_timesteps: int,
         seed: int,
     ) -> list[Trajectory]:
-        env = self.make_raw_env(env_id)
-        partial = custom_partial.create(env_id) if custom_partial else None
-        trajectories = []
-        trajectory = Trajectory()
-        obs, info = env.reset(seed=seed)
-        if partial is not None:
-            partial.reset(info)
-        steps = 0
-
-        try:
-            while steps < total_timesteps:
-                model_obs = policy_observation(stats_source, obs)
-                action, _ = model.predict(model_obs, deterministic=False)
-                env_action = action_for_space(env.action_space, action)
-                new_obs, true_reward, terminated, truncated, info = env.step(env_action)
-                done = terminated or truncated
-                if partial is None:
-                    partial_reward = 0.0
-                else:
-                    partial_reward = partial.step(obs, env_action, new_obs, true_reward, terminated, truncated, info).partial
-                trajectory.push_state(new_obs, env_action, done, info, float(true_reward), partial_reward)
-                steps += 1
-
-                if done:
-                    trajectories.append(trajectory)
-                    trajectory = Trajectory()
-                    obs, info = env.reset()
-                    if partial is not None:
-                        partial.reset(info)
-                else:
-                    obs = new_obs
-        finally:
-            env.close()
-
-        if trajectory.states:
-            trajectories.append(trajectory)
-        return trajectories
+        collector = PolicyTrajectoryCollector(
+            model=model,
+            stats_source=stats_source,
+            make_env=self.make_raw_env,
+            env_id=env_id,
+            custom_partial=custom_partial,
+            model_observation=policy_observation,
+            action_converter=lambda env, action: action_for_space(env.action_space, action),
+        )
+        return collector.rollout_trajectories(total_timesteps=total_timesteps, seed=seed)
