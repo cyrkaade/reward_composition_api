@@ -76,6 +76,11 @@ class RlhfTrainer:
             f"\nPreference round {round_index}: "
             f"collecting {collection_steps} {self.collection_label} for {round_query_budget} queries"
         )
+        if round_query_budget <= 0 and not self._needs_pretraining():
+            print("skipping preference collection because no queries are scheduled")
+            self.train_policy_round(round_index)
+            return
+
         trajectories = self.collect_trajectories(round_index, collection_steps)
         self.maybe_pretrain_reward_model(trajectories)
         self.add_query_pairs(trajectories, round_query_budget)
@@ -84,9 +89,12 @@ class RlhfTrainer:
         if self.total_queries >= config.query_budget:
             print("synthetic query budget exhausted")
 
+    def _needs_pretraining(self) -> bool:
+        return bool(self.config.pretrain_reward_model and not self.pretraining_done)
+
     def maybe_pretrain_reward_model(self, trajectories: list[Trajectory]) -> None:
         config = self.config
-        if config.pretrain_reward_model and not self.pretraining_done:
+        if self._needs_pretraining():
             print(f"pretraining reward model on {config.pretrain_target} target")
             for model_index, reward_model in enumerate(self.reward_models):
                 if len(self.reward_models) > 1:
