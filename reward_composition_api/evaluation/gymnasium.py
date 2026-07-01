@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from reward_composition_api.environments.spaces import action_for_space, policy_observation
-from reward_composition_api.evaluation.components import summarize_component_rows
+from reward_composition_api.evaluation.component_evaluator import evaluate_policy_components
 from reward_composition_api.registry import PartialSpec
 
 from .reporting import ComponentEvalCallback, write_component_summary_csv
@@ -19,48 +19,19 @@ def evaluate_gym_components(
     seed: int = 0,
     deterministic: bool = True,
 ):
-    rows = []
-    env = make_env(env_id)
-    partial = custom_partial.create(env_id) if custom_partial else None
-    try:
-        for episode_index in range(n_eval_episodes):
-            obs, info = env.reset(seed=seed + episode_index)
-            if partial is not None:
-                partial.reset(info)
-            done = False
-            total = 0.0
-            length = 0
-            components = {key: 0.0 for key in component_keys(custom_partial)}
-            partial_total = 0.0
-
-            while not done:
-                model_obs = policy_observation(stats_source, obs)
-                action, _ = model.predict(model_obs, deterministic=deterministic)
-                env_action = action_for_space(env.action_space, action)
-                new_obs, reward, terminated, truncated, info = env.step(env_action)
-                done = terminated or truncated
-                total += float(reward)
-                length += 1
-
-                if partial is None:
-                    step_partial = 0.0
-                    step_components = {}
-                else:
-                    partial_step = partial.step(obs, env_action, new_obs, reward, terminated, truncated, info)
-                    step_partial = partial_step.partial
-                    step_components = partial_step.components
-                partial_total += step_partial
-                for key, value in step_components.items():
-                    if key in components:
-                        components[key] += value
-                obs = new_obs
-
-            residual = total - partial_total
-            rows.append({"total": total, "partial": partial_total, "residual": residual, "length": float(length), **components})
-    finally:
-        env.close()
-
-    return summarize_component_rows(rows, ["total", "partial", "residual", *component_keys(custom_partial), "length"])
+    return evaluate_policy_components(
+        model=model,
+        env_id=env_id,
+        make_env=make_env,
+        custom_partial=custom_partial,
+        stats_source=stats_source,
+        n_eval_episodes=n_eval_episodes,
+        seed=seed,
+        deterministic=deterministic,
+        component_keys=component_keys(custom_partial),
+        model_observation=policy_observation,
+        action_converter=lambda env, action: action_for_space(env.action_space, action),
+    )
 
 
 def component_keys(custom_partial: PartialSpec | None = None) -> tuple[str, ...]:

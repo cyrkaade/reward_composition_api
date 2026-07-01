@@ -6,7 +6,7 @@ import numpy as np
 
 from local_gym.classes.atari_reward_specs import AtariRewardSpec
 from reward_composition_api.environments.vectorized import normalize_obs
-from reward_composition_api.evaluation.components import summarize_component_rows
+from reward_composition_api.evaluation.component_evaluator import evaluate_policy_components
 from reward_composition_api.registry import PartialSpec
 
 from .reporting import ComponentEvalCallback, write_component_summary_csv
@@ -24,56 +24,37 @@ def evaluate_atari_components(
     seed: int = 0,
     deterministic: bool = True,
 ):
-    rows = []
-    env = make_env(env_id)
-    partial = custom_partial.create(env_id) if custom_partial else None
-    try:
-        for episode_index in range(n_eval_episodes):
-            obs, info = env.reset(seed=seed + episode_index)
-            tracker = spec.new_tracker()
-            tracker.reset(info)
-            if partial is not None:
-                partial.reset(info)
-            done = False
-            total = 0.0
-            length = 0
-            components = {key: 0.0 for key in _component_keys(custom_partial)}
-            partial_total = 0.0
+    tracker = None
 
-            while not done:
-                model_obs = normalize_obs(stats_source, obs)
-                action, _ = model.predict(model_obs, deterministic=deterministic)
-                action = int(np.asarray(action).reshape(-1)[0])
-                new_obs, reward, terminated, truncated, info = env.step(action)
-                done = terminated or truncated
-                total += float(reward)
-                length += 1
+    def reset_tracker(info: dict) -> None:
+        nonlocal tracker
+        tracker = spec.new_tracker()
+        tracker.reset(info)
 
-                if partial is None:
-                    step = tracker.step(info, true_reward=float(reward), partial_source=partial_source)
-                    partial_total += step.partial
-                    step_components = {
-                        "life_loss_penalty": step.life_loss_penalty,
-                        "score_partial": step.score_partial,
-                        "lost_lives": step.lost_lives,
-                        "lives": step.lives,
-                    }
-                else:
-                    partial_step = partial.step(obs, action, new_obs, reward, terminated, truncated, info)
-                    partial_total += partial_step.partial
-                    step_components = partial_step.components
+    def default_partial_step(_obs, _action, _new_obs, reward, _terminated, _truncated, info):
+        step = tracker.step(info, true_reward=reward, partial_source=partial_source)
+        return step.partial, {
+            "life_loss_penalty": step.life_loss_penalty,
+            "score_partial": step.score_partial,
+            "lost_lives": step.lost_lives,
+            "lives": step.lives,
+        }
 
-                for key, value in step_components.items():
-                    if key in components:
-                        components[key] += value
-                obs = new_obs
-
-            residual = total - partial_total
-            rows.append({"total": total, "partial": partial_total, "residual": residual, "length": float(length), **components})
-    finally:
-        env.close()
-
-    return summarize_component_rows(rows, component_keys(custom_partial))
+    return evaluate_policy_components(
+        model=model,
+        env_id=env_id,
+        make_env=make_env,
+        custom_partial=custom_partial,
+        stats_source=stats_source,
+        n_eval_episodes=n_eval_episodes,
+        seed=seed,
+        deterministic=deterministic,
+        component_keys=_component_keys(custom_partial),
+        model_observation=normalize_obs,
+        action_converter=lambda _env, action: int(np.asarray(action).reshape(-1)[0]),
+        default_partial_step=default_partial_step,
+        reset_reward_state=reset_tracker,
+    )
 
 
 def _component_keys(custom_partial: PartialSpec | None) -> tuple[str, ...]:

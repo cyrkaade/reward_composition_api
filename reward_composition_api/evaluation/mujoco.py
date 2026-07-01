@@ -6,7 +6,7 @@ import gymnasium as gym
 
 from local_gym.classes.mujoco_reward_specs import MuJoCoRewardSpec
 from reward_composition_api.environments.vectorized import normalize_obs
-from reward_composition_api.evaluation.components import summarize_component_rows
+from reward_composition_api.evaluation.component_evaluator import evaluate_policy_components
 from reward_composition_api.registry import PartialSpec
 
 from .reporting import ComponentEvalCallback, write_component_summary_csv
@@ -22,51 +22,23 @@ def evaluate_mujoco_components(
     seed: int = 0,
     deterministic: bool = True,
 ):
-    rows = []
-    env = gym.make(env_id)
-    partial = custom_partial.create(env_id) if custom_partial else None
-    try:
-        for episode_index in range(n_eval_episodes):
-            obs, info = env.reset(seed=seed + episode_index)
-            if partial is not None:
-                partial.reset(info)
-            done = False
-            total = 0.0
-            length = 0
-            components = _empty_accumulators(spec, custom_partial)
-
-            while not done:
-                model_obs = normalize_obs(stats_source, obs)
-                action, _ = model.predict(model_obs, deterministic=deterministic)
-                new_obs, reward, terminated, truncated, info = env.step(action[0])
-                done = terminated or truncated
-                total += float(reward)
-                length += 1
-
-                if partial is None:
-                    step_components = spec.components(info)
-                else:
-                    partial_step = partial.step(obs, action[0], new_obs, reward, terminated, truncated, info)
-                    step_components = {"partial": partial_step.partial, **partial_step.components}
-                for key, value in step_components.items():
-                    if key in components:
-                        components[key] += value
-                obs = new_obs
-
-            residual = total - components["partial"]
-            row = {"total": total, "residual": residual, "length": float(length), **components}
-            rows.append(row)
-    finally:
-        env.close()
-
-    keys = ["total", "partial", "residual", *_component_keys(spec, custom_partial), "length"]
-    return summarize_component_rows(rows, keys)
-
-
-def _empty_accumulators(spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None) -> dict[str, float]:
-    values = {key: 0.0 for key in _component_keys(spec, custom_partial)}
-    values["partial"] = 0.0
-    return values
+    return evaluate_policy_components(
+        model=model,
+        env_id=env_id,
+        make_env=gym.make,
+        custom_partial=custom_partial,
+        stats_source=stats_source,
+        n_eval_episodes=n_eval_episodes,
+        seed=seed,
+        deterministic=deterministic,
+        component_keys=_component_keys(spec, custom_partial),
+        model_observation=normalize_obs,
+        action_converter=lambda _env, action: action[0],
+        default_partial_step=lambda _obs, _action, _new_obs, _reward, _terminated, _truncated, info: (
+            spec.partial_reward(info),
+            spec.components(info),
+        ),
+    )
 
 
 def _component_keys(spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None) -> tuple[str, ...]:
