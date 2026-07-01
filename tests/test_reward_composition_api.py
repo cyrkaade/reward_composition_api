@@ -115,6 +115,13 @@ class RewardCompositionApiTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             normalize_experiment_config(ExperimentConfig(rlhf_rounds=0))
 
+    def test_legacy_suite_is_not_advertised(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                cli_main(["list-envs", "--suite", "legacy"])
+
+        self.assertEqual(raised.exception.code, 2)
+
     def test_cli_friendly_mapping_parsers(self):
         self.assertEqual(parse_int_tuple("64,64"), (64, 64))
         self.assertEqual(

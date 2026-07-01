@@ -16,9 +16,8 @@ MUJOCO_SUITE = "mujoco"
 ATARI_SUITE = "atari"
 BOX2D_SUITE = "box2d"
 GYM_SUITE = "gym"
-LEGACY_SUITE = "legacy"
 TRAIN_SUITES = (MUJOCO_SUITE, ATARI_SUITE, BOX2D_SUITE, GYM_SUITE)
-SUITES = (*TRAIN_SUITES, LEGACY_SUITE)
+SUITES = TRAIN_SUITES
 
 TRAIN_MODES = ("true", "partial", "feedback", "naive", "delta")
 ATARI_TRAIN_MODES = ("true", "partial", "feedback", "naive", "delta")
@@ -154,7 +153,7 @@ def suite_default_envs(suite: str) -> tuple[str, ...]:
         return tuple(env for env in ("LunarLander-v3", "BipedalWalker-v3", "CarRacing-v3") if env in suite_supported_envs(BOX2D_SUITE))
     if suite == GYM_SUITE:
         return ("CartPole-v1",)
-    return ("LunarLander-v3", "Reacher-v5")
+    raise ConfigError(f"Unsupported suite '{suite}'")
 
 
 def suite_supported_envs(suite: str) -> tuple[str, ...]:
@@ -167,7 +166,7 @@ def suite_supported_envs(suite: str) -> tuple[str, ...]:
         return tuple(env_id for env_id in _registered_gym_envs() if _is_box2d_env(env_id))
     if suite == GYM_SUITE:
         return _registered_gym_envs()
-    return ("LunarLander-v3", "Reacher-v5")
+    raise ConfigError(f"Unsupported suite '{suite}'")
 
 
 def normalize_experiment_config(config: ExperimentConfig) -> ExperimentConfig:
@@ -404,4 +403,3 @@ def _validate_common_numeric(timesteps: int, rlhf_rounds: int, query_budget: int
         raise ConfigError("query_budget must be non-negative")
     if fragment_length <= 0:
         raise ConfigError("fragment_length must be greater than zero")
-

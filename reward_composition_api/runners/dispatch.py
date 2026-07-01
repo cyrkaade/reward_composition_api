@@ -26,4 +26,4 @@ def run_experiment(config: ExperimentConfig) -> RunResult:
         from .gymnasium import run_gym_experiment
 
         return run_gym_experiment(normalized)
-    raise ConfigError("legacy experiments are available through the CLI legacy subcommand")
+    raise ConfigError(f"Unsupported train suite '{normalized.suite}'")
