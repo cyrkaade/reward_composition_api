@@ -12,14 +12,12 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from reward_composition_api.config import ExperimentConfig
 from reward_composition_api.data_structures import Trajectory
-from reward_composition_api.environments.trajectory_collector import PolicyTrajectoryCollector
+from reward_composition_api.environments.trajectory_collector import VectorizedPolicyTrajectoryCollector
 from reward_composition_api.registry import PartialSpec
 
 from .gymnasium_runtime import GymLearnedRewardRuntime, GymPreferenceRewardWrapper, reward_model_features
 from .spaces import (
-    action_for_space,
     is_image_space,
-    policy_observation,
     should_normalize_observation,
 )
 from .vectorized import load_vecnormalize_eval_env, make_raw_eval_env as make_common_raw_eval_env
@@ -119,13 +117,5 @@ class GymnasiumEnvironmentProfile:
         total_timesteps: int,
         seed: int,
     ) -> list[Trajectory]:
-        collector = PolicyTrajectoryCollector(
-            model=model,
-            stats_source=stats_source,
-            make_env=self.make_raw_env,
-            env_id=env_id,
-            custom_partial=custom_partial,
-            model_observation=policy_observation,
-            action_converter=lambda env, action: action_for_space(env.action_space, action),
-        )
+        collector = VectorizedPolicyTrajectoryCollector(model=model, vec_env=stats_source)
         return collector.rollout_trajectories(total_timesteps=total_timesteps, seed=seed)
