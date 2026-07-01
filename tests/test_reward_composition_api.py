@@ -111,6 +111,21 @@ class RewardCompositionApiTest(unittest.TestCase):
         self.assertEqual(life_loss_step.partial, -1.0)
         self.assertEqual(life_loss_step.components["lost_lives"], 1.0)
 
+    def test_hopper_experiment_partials_load_from_partials_folder(self):
+        registry = build_builtin_registry()
+        info = {"reward_forward": 2.0, "reward_survive": 1.0, "reward_ctrl": -0.1}
+
+        capped = load_partial_reference("hopper_capped_forward_survive", "mujoco", registry).create("Hopper-v5")
+        capped_step = capped.step(None, None, None, 0.0, False, False, info)
+
+        half = load_partial_reference("hopper_half_forward", "mujoco", registry).create("Hopper-v5")
+        half_step = half.step(None, None, None, 0.0, False, False, info)
+
+        self.assertEqual(capped_step.partial, 2.0)
+        self.assertEqual(capped_step.components["ctrl_omitted"], -0.1)
+        self.assertEqual(half_step.partial, 1.0)
+        self.assertEqual(half_step.components["survive_omitted"], 1.0)
+
     def test_config_validation_rejects_bad_rounds(self):
         with self.assertRaises(ConfigError):
             normalize_experiment_config(ExperimentConfig(rlhf_rounds=0))
