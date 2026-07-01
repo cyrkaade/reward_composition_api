@@ -27,7 +27,7 @@ def rate_pairs_from_true_reward(pairs: list[tuple[Trajectory, Trajectory]]) -> l
     return rated_pairs
 
 
-def fragment_trajectories(trajectories: list[Trajectory], fragment_length: int, continuous: bool) -> list[Trajectory]:
+def fragment_trajectories(trajectories: list[Trajectory], fragment_length: int) -> list[Trajectory]:
     fragments = []
     for trajectory in trajectories:
         states = trajectory.get_states()
@@ -145,10 +145,9 @@ def choose_query_pairs(
     dropout_samples: int,
     dropout_p: float,
     active_learning_batches: int,
-    continuous: bool,
     active_query_strategy: str = "auto",
 ) -> list[tuple[Trajectory, Trajectory]]:
-    fragments = fragment_trajectories(trajectories, fragment_length, continuous=continuous)
+    fragments = fragment_trajectories(trajectories, fragment_length)
     if len(fragments) < 2 or query_count <= 0:
         return []
     if reward_model is None or not active_learning:

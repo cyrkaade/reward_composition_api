@@ -26,7 +26,6 @@ class RlhfTrainer:
         reward_model: RewardModel | list[RewardModel],
         convert_traj: Callable[[Trajectory], list[list[float]]],
         collect_trajectories: Callable[[int, int], list[Trajectory]],
-        continuous: bool,
         collection_label: str,
     ):
         self.config = config
@@ -37,7 +36,6 @@ class RlhfTrainer:
         self.reward_model = self.reward_models[0]
         self.convert_traj = convert_traj
         self.collect_trajectories = collect_trajectories
-        self.continuous = continuous
         self.collection_label = collection_label
         self.rated_train = []
         self.rated_val = []
@@ -118,7 +116,6 @@ class RlhfTrainer:
             dropout_samples=config.dropout_samples,
             dropout_p=config.dropout_p,
             active_learning_batches=config.active_learning_batches,
-            continuous=self.continuous,
             active_query_strategy=config.active_query_strategy,
         )
         rated_pairs = rate_pairs_from_true_reward(pairs)

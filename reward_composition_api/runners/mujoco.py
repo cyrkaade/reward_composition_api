@@ -131,7 +131,6 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
                 total_timesteps=collection_steps,
                 seed=config.seed * 1000 + round_index * 100,
             ),
-            continuous=True,
             collection_label="steps",
         ).run()
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -158,7 +157,6 @@ class GymExperimentRunner(BaseExperimentRunner):
                 total_timesteps=collection_steps,
                 seed=config.seed * 1000 + round_index * 100,
             ),
-            continuous=not isinstance(action_space, spaces.Discrete),
             collection_label="Gym steps",
         ).run()
 

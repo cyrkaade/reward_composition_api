@@ -146,7 +146,6 @@ class AtariExperimentRunner(BaseExperimentRunner):
                 total_timesteps=collection_steps,
                 seed=config.seed * 1000 + round_index * 100,
             ),
-            continuous=False,
             collection_label="Atari steps",
         ).run()
 
