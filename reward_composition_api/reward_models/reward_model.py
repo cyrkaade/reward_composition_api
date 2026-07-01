@@ -5,14 +5,6 @@ from torch import Tensor
 class RewardModel(th.nn.Module):
     def __init__(self, input_size=10, hidden_sizes=(200,)):
         super().__init__()
-        hidden_sizes = tuple(hidden_sizes)
-        if hidden_sizes == (200,):
-            self.linear1 = th.nn.Linear(input_size, 200)
-            self.act1 = th.nn.LeakyReLU()
-            self.linear2 = th.nn.Linear(200, 1)
-            self.net = None
-            return
-
         layers = []
         last_size = input_size
         for hidden_size in hidden_sizes:
@@ -23,23 +15,13 @@ class RewardModel(th.nn.Module):
         self.net = th.nn.Sequential(*layers)
 
     def forward(self, x):
-        if self.net is not None:
-            return self.net(x)
-        x = self.linear1(x)
-        x = self.act1(x)
-        x = self.linear2(x)
-        return x
+        return self.net(x)
 
     def dropout(self, prob):
         m = th.nn.Dropout(prob)
-        if self.net is not None:
-            for layer in self.net:
-                if isinstance(layer, th.nn.Linear):
-                    layer.weight = th.nn.Parameter(m.forward(layer.weight))
-            return self
-
-        self.linear1.weight = th.nn.Parameter(m.forward(self.linear1.weight))
-        self.linear2.weight = th.nn.Parameter(m.forward(self.linear2.weight))
+        for layer in self.net:
+            if isinstance(layer, th.nn.Linear):
+                layer.weight = th.nn.Parameter(m.forward(layer.weight))
         return self
 
 

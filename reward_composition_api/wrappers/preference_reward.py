@@ -6,7 +6,7 @@ import gymnasium as gym
 import numpy as np
 import torch as th
 
-from reward_model.reward_model import RewardModel
+from reward_composition_api.reward_models.reward_model import RewardModel
 
 
 class BaseLearnedRewardRuntime:

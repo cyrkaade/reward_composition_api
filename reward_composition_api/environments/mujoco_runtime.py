@@ -21,7 +21,7 @@ from reward_composition_api.environments.vectorized import (
 )
 from reward_composition_api.registry import PartialSpec
 from reward_composition_api.wrappers.preference_reward import BaseLearnedRewardRuntime, BasePreferenceRewardWrapper
-from reward_model.reward_model import RewardModel
+from reward_composition_api.reward_models.reward_model import RewardModel
 
 REACHER_V5_PPO_PRESETS = {
     "mujoco_reacher": {

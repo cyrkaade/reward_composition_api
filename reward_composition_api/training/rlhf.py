@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Callable
 
 from reward_composition_api.data_structures import Trajectory
-from reward_model.reward_model import RewardModel
+from reward_composition_api.reward_models.reward_model import RewardModel
 
 from reward_composition_api.reward_models import (
     choose_query_pairs,

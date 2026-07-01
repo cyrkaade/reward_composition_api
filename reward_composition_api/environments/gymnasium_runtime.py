@@ -24,7 +24,7 @@ from reward_composition_api.environments.vectorized import load_vecnormalize_eva
 from reward_composition_api.registry import PartialSpec
 from reward_composition_api.wrappers.lunar_lander import LunarLanderSaveInfo
 from reward_composition_api.wrappers.preference_reward import BaseLearnedRewardRuntime, BasePreferenceRewardWrapper
-from reward_model.reward_model import RewardModel
+from reward_composition_api.reward_models.reward_model import RewardModel
 
 @dataclass
 class GymLearnedRewardRuntime(BaseLearnedRewardRuntime):

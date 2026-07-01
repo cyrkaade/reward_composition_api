@@ -9,8 +9,8 @@ import torch as th
 from torch.optim import Adam
 
 from reward_composition_api.data_structures import Trajectory
-from reward_model.preferences.preference import Preference
-from reward_model.reward_model import (
+from reward_composition_api.data_structures.preference import Preference
+from reward_composition_api.reward_models.reward_model import (
     DeltaLoss,
     OutputRegularizationLoss,
     PairwiseLoss,

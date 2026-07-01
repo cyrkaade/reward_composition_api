@@ -17,8 +17,8 @@ from reward_composition_api.summaries import summarize_runs
 from reward_composition_api.sweeps import plan_sweep, run_sweep
 from reward_composition_api.reward_models import split_preference_k_folds
 from reward_composition_api.training import query_schedule
-from reward_model.preferences.preference import Preference
-from reward_model.reward_model import RewardModel
+from reward_composition_api.data_structures.preference import Preference
+from reward_composition_api.reward_models.reward_model import RewardModel
 
 
 class RewardCompositionApiTest(unittest.TestCase):

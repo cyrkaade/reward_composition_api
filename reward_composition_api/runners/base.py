@@ -12,7 +12,7 @@ from reward_composition_api.partial_reward import include_partial_feature, resol
 from reward_composition_api.registry import PartialSpec
 from reward_composition_api.results import RunResult
 from reward_composition_api.training import SaveVecNormalizeOnBest
-from reward_model.reward_model import RewardModel
+from reward_composition_api.reward_models.reward_model import RewardModel
 
 
 def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel | list[RewardModel]:
