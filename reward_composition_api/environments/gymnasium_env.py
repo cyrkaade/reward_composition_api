@@ -12,7 +12,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from reward_composition_api.config import ExperimentConfig
 from reward_composition_api.data_structures import Trajectory
-from reward_composition_api.environments.trajectory_collector import VectorizedPolicyTrajectoryCollector
+from reward_composition_api.environments.trajectory_collector import TrajectoryCollector
 from reward_composition_api.registry import PartialSpec
 
 from .gymnasium_runtime import GymLearnedRewardRuntime, GymPreferenceRewardWrapper, reward_model_features
@@ -117,5 +117,5 @@ class GymnasiumEnvironmentProfile:
         total_timesteps: int,
         seed: int,
     ) -> list[Trajectory]:
-        collector = VectorizedPolicyTrajectoryCollector(model=model, vec_env=stats_source)
+        collector = TrajectoryCollector(vec_env=stats_source, agent=model)
         return collector.rollout_trajectories(total_timesteps=total_timesteps, seed=seed)

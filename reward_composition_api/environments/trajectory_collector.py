@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import VecEnv, VecNormalize
+from stable_baselines3.common.vec_env import VecEnv, VecEnvWrapper, VecNormalize
 
 from reward_composition_api.data_structures import Trajectory
 from reward_composition_api.registry import PartialSpec
@@ -94,74 +94,94 @@ class PolicyTrajectoryCollector:
             partial.reset(info)
 
 
-@dataclass
-class VectorizedPolicyTrajectoryCollector:
-    model: PPO
-    vec_env: VecEnv
-    true_reward_key: str = "true_reward"
-    partial_reward_key: str = "partial_reward"
+class BufferingWrapper(VecEnvWrapper):
+    def __init__(
+        self,
+        venv: VecEnv,
+        true_reward_key: str = "true_reward",
+        partial_reward_key: str = "partial_reward",
+    ):
+        super().__init__(venv)
+        self.true_reward_key = true_reward_key
+        self.partial_reward_key = partial_reward_key
+        self.temp_trajectories = [Trajectory() for _ in range(self.num_envs)]
+        self.finished_trajectories: list[Trajectory] = []
+        self._saved_acts = None
+
+    def reset(self, **kwargs):
+        obs = self.venv.reset(**kwargs)
+        self.temp_trajectories = [Trajectory() for _ in range(self.num_envs)]
+        self.finished_trajectories = []
+        return obs
+
+    def step_async(self, actions):
+        self._saved_acts = actions
+        self.venv.step_async(actions)
+
+    def step_wait(self):
+        new_obs, rewards, dones, infos = self.venv.step_wait()
+        for env_idx in range(self.num_envs):
+            info = infos[env_idx]
+            trajectory_obs = info.get("terminal_observation", _batch_item(new_obs, env_idx))
+            true_reward = float(info.get(self.true_reward_key, rewards[env_idx]))
+            partial_reward = float(info.get(self.partial_reward_key, 0.0))
+            self.temp_trajectories[env_idx].push_state(
+                trajectory_obs,
+                _batch_item(self._saved_acts, env_idx),
+                bool(dones[env_idx]),
+                dict(info),
+                true_reward,
+                partial_reward,
+            )
+            if dones[env_idx]:
+                self.finished_trajectories.append(self.temp_trajectories[env_idx])
+                self.temp_trajectories[env_idx] = Trajectory()
+        return new_obs, rewards, dones, infos
+
+    def pop_trajectories(self) -> list[Trajectory]:
+        trajectories = self.finished_trajectories
+        self.finished_trajectories = []
+        return trajectories
+
+
+class TrajectoryCollector:
+    def __init__(self, vec_env: VecEnv, agent: PPO, verbose: bool = False):
+        self.vec_env, self.buffering_wrapper = _buffered_vec_env(vec_env)
+        self.agent = agent
+        self.verbose = verbose
+
+    def _run_algo(self, total_timesteps: int) -> None:
+        trained_steps = 0
+        obs = self.vec_env.reset()
+        while trained_steps < total_timesteps:
+            actions, _ = self.agent.predict(obs, deterministic=False)
+            obs, _, _, _ = self.vec_env.step(actions)
+            trained_steps += self.vec_env.num_envs
 
     def rollout_trajectories(self, total_timesteps: int, seed: int | None = None) -> list[Trajectory]:
         previous_training = self.vec_env.training if isinstance(self.vec_env, VecNormalize) else None
         if isinstance(self.vec_env, VecNormalize):
             self.vec_env.training = False
-
-        trajectories = [Trajectory() for _ in range(self.vec_env.num_envs)]
-        completed: list[Trajectory] = []
-        steps = 0
-
         try:
             if seed is not None:
                 self.vec_env.seed(seed)
-            model_obs = self.vec_env.reset()
-
-            while steps < total_timesteps:
-                action, _ = self.model.predict(model_obs, deterministic=False)
-                next_model_obs, rewards, dones, infos = self.vec_env.step(action)
-                raw_next_obs = self._raw_current_observation(next_model_obs)
-
-                for env_index, info in enumerate(infos):
-                    done = bool(dones[env_index])
-                    state_obs = self._state_observation(info, raw_next_obs, env_index, done)
-                    env_action = _batch_item(action, env_index)
-                    true_reward = float(info.get(self.true_reward_key, rewards[env_index]))
-                    partial_reward = float(info.get(self.partial_reward_key, 0.0))
-
-                    trajectories[env_index].push_state(
-                        state_obs,
-                        env_action,
-                        done,
-                        dict(info),
-                        true_reward,
-                        partial_reward,
-                    )
-
-                    if done:
-                        completed.append(trajectories[env_index])
-                        trajectories[env_index] = Trajectory()
-
-                steps += self.vec_env.num_envs
-                model_obs = next_model_obs
+            self._run_algo(total_timesteps)
+            return self.buffering_wrapper.pop_trajectories()
         finally:
             if isinstance(self.vec_env, VecNormalize):
                 self.vec_env.training = bool(previous_training)
-            _clear_model_rollout_state(self.model)
+            _clear_model_rollout_state(self.agent)
 
-        completed.extend(trajectory for trajectory in trajectories if trajectory.states)
-        return completed
 
-    def _raw_current_observation(self, observation):
-        if isinstance(self.vec_env, VecNormalize):
-            return self.vec_env.get_original_obs()
-        return observation
-
-    def _state_observation(self, info: dict, raw_next_obs, env_index: int, done: bool):
-        if done and "terminal_observation" in info:
-            terminal_observation = info["terminal_observation"]
-            if isinstance(self.vec_env, VecNormalize):
-                terminal_observation = self.vec_env.unnormalize_obs(terminal_observation)
-            return terminal_observation
-        return _batch_item(raw_next_obs, env_index)
+def _buffered_vec_env(vec_env: VecEnv) -> tuple[VecEnv, BufferingWrapper]:
+    if isinstance(vec_env, BufferingWrapper):
+        return vec_env, vec_env
+    if isinstance(vec_env, VecNormalize):
+        if not isinstance(vec_env.venv, BufferingWrapper):
+            vec_env.venv = BufferingWrapper(vec_env.venv)
+        return vec_env, vec_env.venv
+    wrapper = BufferingWrapper(vec_env)
+    return wrapper, wrapper
 
 
 def _batch_item(value, index: int):

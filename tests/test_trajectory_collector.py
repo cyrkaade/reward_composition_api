@@ -7,7 +7,7 @@ import numpy as np
 from gymnasium import spaces
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from reward_composition_api.environments.trajectory_collector import PolicyTrajectoryCollector, VectorizedPolicyTrajectoryCollector
+from reward_composition_api.environments.trajectory_collector import BufferingWrapper, PolicyTrajectoryCollector, TrajectoryCollector
 
 
 class DummyModel:
@@ -163,13 +163,14 @@ class PolicyTrajectoryCollectorTest(unittest.TestCase):
         self.assertEqual(partial_spec.partial.reset_infos, [{"reset": 1, "seed": 5}])
         self.assertEqual(trajectories[0].states[0]["partial_rew"], 7.5)
 
-    def test_vectorized_collector_uses_vec_env_infos_and_episode_boundaries(self):
+    def test_buffering_wrapper_collector_uses_vec_env_infos_and_episode_boundaries(self):
         model = VectorDummyModel()
         vec_env = DummyVecEnv([lambda: VectorCountingEnv(0.0), lambda: VectorCountingEnv(10.0)])
-        collector = VectorizedPolicyTrajectoryCollector(model=model, vec_env=vec_env)
+        collector = TrajectoryCollector(agent=model, vec_env=vec_env)
 
         trajectories = collector.rollout_trajectories(total_timesteps=4, seed=7)
 
+        self.assertIsInstance(collector.buffering_wrapper, BufferingWrapper)
         self.assertEqual([len(trajectory.states) for trajectory in trajectories], [2, 2])
         self.assertEqual([state["rew"] for state in trajectories[0].states], [1.0, 2.0])
         self.assertEqual([state["partial_rew"] for state in trajectories[1].states], [0.1, 0.2])
@@ -177,7 +178,7 @@ class PolicyTrajectoryCollectorTest(unittest.TestCase):
         self.assertTrue(np.allclose(trajectories[1].states[-1]["obs"], np.asarray([12.0], dtype=np.float32)))
         self.assertIsNone(model._last_obs)
 
-    def test_vectorized_collector_restores_vecnormalize_training_flag(self):
+    def test_buffering_wrapper_collector_wraps_under_vecnormalize(self):
         model = VectorDummyModel()
         vec_env = VecNormalize(
             DummyVecEnv([lambda: VectorCountingEnv(0.0)]),
@@ -185,10 +186,11 @@ class PolicyTrajectoryCollectorTest(unittest.TestCase):
             norm_reward=True,
             training=True,
         )
-        collector = VectorizedPolicyTrajectoryCollector(model=model, vec_env=vec_env)
+        collector = TrajectoryCollector(agent=model, vec_env=vec_env)
 
         trajectories = collector.rollout_trajectories(total_timesteps=2, seed=11)
 
+        self.assertIsInstance(vec_env.venv, BufferingWrapper)
         self.assertTrue(vec_env.training)
         self.assertEqual(len(trajectories[0].states), 2)
         self.assertTrue(np.allclose(trajectories[0].states[-1]["obs"], np.asarray([2.0], dtype=np.float32)))

@@ -18,7 +18,7 @@ from reward_composition_api.environments.vectorized import (
     load_vecnormalize_eval_env,
     make_raw_eval_env as make_common_raw_eval_env,
 )
-from reward_composition_api.environments.trajectory_collector import VectorizedPolicyTrajectoryCollector
+from reward_composition_api.environments.trajectory_collector import TrajectoryCollector
 from reward_composition_api.registry import PartialSpec
 from reward_composition_api.wrappers.preference_reward import BaseLearnedRewardRuntime, BasePreferenceRewardWrapper
 from reward_composition_api.reward_models.reward_model import RewardModel
@@ -209,5 +209,5 @@ def collect_policy_trajectories(
     total_timesteps: int,
     seed: int,
 ) -> list[Trajectory]:
-    collector = VectorizedPolicyTrajectoryCollector(model=model, vec_env=stats_source)
+    collector = TrajectoryCollector(vec_env=stats_source, agent=model)
     return collector.rollout_trajectories(total_timesteps=total_timesteps, seed=seed)
