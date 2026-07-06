@@ -89,6 +89,34 @@ class VectorCountingEnv(gym.Env):
         )
 
 
+class NonTerminatingVectorEnv(gym.Env):
+    metadata = {}
+
+    def __init__(self, offset: float = 0.0):
+        self.offset = float(offset)
+        self.observation_space = spaces.Box(low=-100.0, high=100.0, shape=(1,), dtype=np.float32)
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        self.step_count = 0
+
+    def reset(self, seed=None, options=None):
+        self.step_count = 0
+        return np.asarray([self.offset], dtype=np.float32), {"seed": seed}
+
+    def step(self, action):
+        self.step_count += 1
+        observation = np.asarray([self.offset + self.step_count], dtype=np.float32)
+        return (
+            observation,
+            99.0,
+            False,
+            False,
+            {
+                "true_reward": self.offset + self.step_count,
+                "partial_reward": self.step_count / 10.0,
+            },
+        )
+
+
 class CustomPartial:
     def __init__(self):
         self.reset_infos = []
@@ -194,6 +222,17 @@ class PolicyTrajectoryCollectorTest(unittest.TestCase):
         self.assertTrue(vec_env.training)
         self.assertEqual(len(trajectories[0].states), 2)
         self.assertTrue(np.allclose(trajectories[0].states[-1]["obs"], np.asarray([2.0], dtype=np.float32)))
+
+    def test_buffering_wrapper_collector_returns_unfinished_rollouts(self):
+        model = VectorDummyModel()
+        vec_env = DummyVecEnv([lambda: NonTerminatingVectorEnv(0.0), lambda: NonTerminatingVectorEnv(10.0)])
+        collector = TrajectoryCollector(agent=model, vec_env=vec_env)
+
+        trajectories = collector.rollout_trajectories(total_timesteps=4, seed=7)
+
+        self.assertEqual([len(trajectory.states) for trajectory in trajectories], [2, 2])
+        self.assertFalse(any(trajectory.states[-1]["done"] for trajectory in trajectories))
+        self.assertEqual([state["rew"] for state in trajectories[0].states], [1.0, 2.0])
 
 
 if __name__ == "__main__":

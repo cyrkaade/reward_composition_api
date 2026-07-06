@@ -15,8 +15,9 @@ from reward_composition_api.partial_reward import build_builtin_registry
 from reward_composition_api.registry import load_partial_reference
 from reward_composition_api.summaries import summarize_runs
 from reward_composition_api.sweeps import plan_sweep, run_sweep
-from reward_composition_api.reward_models import split_preference_k_folds
+from reward_composition_api.reward_models import fragment_trajectories, split_preference_k_folds
 from reward_composition_api.training import query_schedule
+from reward_composition_api.data_structures import Trajectory
 from reward_composition_api.data_structures.preference import Preference
 from reward_composition_api.reward_models.reward_model import RewardModel
 
@@ -160,6 +161,14 @@ class RewardCompositionApiTest(unittest.TestCase):
         self.assertEqual(len(flattened), len(pairs))
         self.assertEqual({id(pair) for pair in flattened}, {id(pair) for pair in pairs})
         self.assertLessEqual(max(len(fold) for fold in folds) - min(len(fold) for fold in folds), 1)
+
+    def test_fragment_trajectories_keeps_exact_length_fragments(self):
+        states = [{"rew": float(index), "partial_rew": 0.0} for index in range(4)]
+
+        fragments = fragment_trajectories([Trajectory(states)], fragment_length=2)
+
+        self.assertEqual([len(fragment.states) for fragment in fragments], [2, 2])
+        self.assertEqual([fragment.get_summed_reward() for fragment in fragments], [1.0, 5.0])
 
     def test_atari_feedback_mode_is_supported(self):
         config = normalize_experiment_config(ExperimentConfig(suite="atari", mode="feedback"))

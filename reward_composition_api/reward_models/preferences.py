@@ -32,7 +32,7 @@ def fragment_trajectories(trajectories: list[Trajectory], fragment_length: int) 
     for trajectory in trajectories:
         states = trajectory.get_states()
         for start_idx in range(0, len(states), fragment_length):
-            if start_idx + fragment_length < len(states):
+            if start_idx + fragment_length <= len(states):
                 fragments.append(Trajectory(states[start_idx : start_idx + fragment_length]))
     return fragments
 

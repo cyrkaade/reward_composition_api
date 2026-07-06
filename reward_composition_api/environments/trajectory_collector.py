@@ -139,8 +139,12 @@ class BufferingWrapper(VecEnvWrapper):
         return new_obs, rewards, dones, infos
 
     def pop_trajectories(self) -> list[Trajectory]:
-        trajectories = self.finished_trajectories
+        trajectories = [
+            *self.finished_trajectories,
+            *(trajectory for trajectory in self.temp_trajectories if trajectory.states),
+        ]
         self.finished_trajectories = []
+        self.temp_trajectories = [Trajectory() for _ in range(self.num_envs)]
         return trajectories
 
 
