@@ -11,12 +11,15 @@ from reward_composition_api.cli import main as cli_main
 from reward_composition_api.config import ExperimentConfig, SummaryConfig, SweepConfig, normalize_experiment_config
 from reward_composition_api.errors import ConfigError
 from reward_composition_api.parsing import parse_int_tuple, parse_key_value_mapping
-from reward_composition_api.partials import build_builtin_registry
+from reward_composition_api.partial_reward import build_builtin_registry
 from reward_composition_api.registry import load_partial_reference
 from reward_composition_api.summaries import summarize_runs
 from reward_composition_api.sweeps import plan_sweep, run_sweep
-from reward_composition_api.backend.common import query_schedule
-from reward_model.reward_model import RewardModel
+from reward_composition_api.reward_models import fragment_trajectories, split_preference_k_folds
+from reward_composition_api.training import query_schedule
+from reward_composition_api.data_structures import Trajectory
+from reward_composition_api.data_structures.preference import Preference
+from reward_composition_api.reward_models.reward_model import RewardModel
 
 
 class RewardCompositionApiTest(unittest.TestCase):
@@ -109,9 +112,31 @@ class RewardCompositionApiTest(unittest.TestCase):
         self.assertEqual(life_loss_step.partial, -1.0)
         self.assertEqual(life_loss_step.components["lost_lives"], 1.0)
 
+    def test_hopper_experiment_partials_load_from_partials_folder(self):
+        registry = build_builtin_registry()
+        info = {"reward_forward": 2.0, "reward_survive": 1.0, "reward_ctrl": -0.1}
+
+        capped = load_partial_reference("hopper_capped_forward_survive", "mujoco", registry).create("Hopper-v5")
+        capped_step = capped.step(None, None, None, 0.0, False, False, info)
+
+        half = load_partial_reference("hopper_half_forward", "mujoco", registry).create("Hopper-v5")
+        half_step = half.step(None, None, None, 0.0, False, False, info)
+
+        self.assertEqual(capped_step.partial, 2.0)
+        self.assertEqual(capped_step.components["ctrl_omitted"], -0.1)
+        self.assertEqual(half_step.partial, 1.0)
+        self.assertEqual(half_step.components["survive_omitted"], 1.0)
+
     def test_config_validation_rejects_bad_rounds(self):
         with self.assertRaises(ConfigError):
             normalize_experiment_config(ExperimentConfig(rlhf_rounds=0))
+
+    def test_legacy_suite_is_not_advertised(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                cli_main(["list-envs", "--suite", "legacy"])
+
+        self.assertEqual(raised.exception.code, 2)
 
     def test_cli_friendly_mapping_parsers(self):
         self.assertEqual(parse_int_tuple("64,64"), (64, 64))
@@ -125,6 +150,25 @@ class RewardCompositionApiTest(unittest.TestCase):
 
         self.assertEqual(model.net[0].in_features, 4)
         self.assertEqual(model.net[-1].out_features, 1)
+
+    def test_preference_k_folds_use_all_pairs_once(self):
+        pairs = [Preference(None, None, float(index)) for index in range(11)]
+
+        folds = split_preference_k_folds(pairs, 5)
+        flattened = [pair for fold in folds for pair in fold]
+
+        self.assertEqual(len(folds), 5)
+        self.assertEqual(len(flattened), len(pairs))
+        self.assertEqual({id(pair) for pair in flattened}, {id(pair) for pair in pairs})
+        self.assertLessEqual(max(len(fold) for fold in folds) - min(len(fold) for fold in folds), 1)
+
+    def test_fragment_trajectories_keeps_exact_length_fragments(self):
+        states = [{"rew": float(index), "partial_rew": 0.0} for index in range(4)]
+
+        fragments = fragment_trajectories([Trajectory(states)], fragment_length=2)
+
+        self.assertEqual([len(fragment.states) for fragment in fragments], [2, 2])
+        self.assertEqual([fragment.get_summed_reward() for fragment in fragments], [1.0, 5.0])
 
     def test_atari_feedback_mode_is_supported(self):
         config = normalize_experiment_config(ExperimentConfig(suite="atari", mode="feedback"))
@@ -177,6 +221,25 @@ class RewardCompositionApiTest(unittest.TestCase):
         self.assertIn("1400", planned[0].command)
         self.assertEqual(query_schedule(1400, 5), [280, 280, 280, 280, 280])
 
+    def test_sweep_command_includes_reward_ensemble_knobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            planned = plan_sweep(
+                SweepConfig(
+                    suite="mujoco",
+                    env_ids=("Reacher-v5",),
+                    seeds=(2,),
+                    log_dir=Path(tmp),
+                    reward_model_ensemble_size=5,
+                    active_query_strategy="ensemble",
+                )
+            )
+
+        command = planned[0].command
+        self.assertIn("--reward-model-ensemble-size", command)
+        self.assertIn("5", command)
+        self.assertIn("--active-query-strategy", command)
+        self.assertIn("ensemble", command)
+
     def test_lunar_lander_defaults_match_legacy_fragment_settings(self):
         config = normalize_experiment_config(
             ExperimentConfig(
@@ -204,6 +267,8 @@ class RewardCompositionApiTest(unittest.TestCase):
                         "requested_timesteps": 10,
                         "actual_timesteps": 10,
                         "synthetic_queries": 0,
+                        "active_query_strategy": "ensemble",
+                        "reward_model_ensemble_size": 5,
                         "selected_policy_true_reward_mean": 1.5,
                         "selected_policy_true_reward_std": 0.1,
                         "selected_policy_components": {"mean_partial": 1.0, "mean_residual": 0.5},
@@ -226,6 +291,8 @@ class RewardCompositionApiTest(unittest.TestCase):
 
         self.assertEqual(len(result.rows), 1)
         self.assertEqual(result.aggregate_rows[0]["mean_selected_true_reward"], 1.5)
+        self.assertEqual(result.rows[0]["active_query_strategy"], "ensemble")
+        self.assertEqual(result.rows[0]["reward_model_ensemble_size"], 5)
         self.assertTrue(summary_exists)
         self.assertTrue(aggregate_exists)
 
@@ -240,6 +307,19 @@ class RewardCompositionApiTest(unittest.TestCase):
             with self.subTest(argv=argv):
                 with contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(cli_main(argv), 0)
+
+    def test_production_code_outside_backend_does_not_import_backend(self):
+        root = Path(__file__).resolve().parents[1] / "reward_composition_api"
+        offenders = []
+        for path in root.rglob("*.py"):
+            relative = path.relative_to(root)
+            if relative.parts[0] == "backend":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "reward_composition_api.backend" in text or "from .backend" in text:
+                offenders.append(str(relative))
+
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

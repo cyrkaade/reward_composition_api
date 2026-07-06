@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import gymnasium as gym
 
@@ -16,9 +16,8 @@ MUJOCO_SUITE = "mujoco"
 ATARI_SUITE = "atari"
 BOX2D_SUITE = "box2d"
 GYM_SUITE = "gym"
-LEGACY_SUITE = "legacy"
 TRAIN_SUITES = (MUJOCO_SUITE, ATARI_SUITE, BOX2D_SUITE, GYM_SUITE)
-SUITES = (*TRAIN_SUITES, LEGACY_SUITE)
+SUITES = TRAIN_SUITES
 
 TRAIN_MODES = ("true", "partial", "feedback", "naive", "delta")
 ATARI_TRAIN_MODES = ("true", "partial", "feedback", "naive", "delta")
@@ -28,6 +27,7 @@ FINAL_POLICIES = ("best", "last")
 PLOT_MODES = ("best", "raw")
 DEVICES = ("auto", "cpu", "cuda")
 PRETRAIN_TARGETS = ("partial", "residual", "true")
+ACTIVE_QUERY_STRATEGIES = ("auto", "dropout", "ensemble")
 MUJOCO_PRESETS = ("auto", "generic", "reacher")
 MUJOCO_PARTIAL_PROFILES = ("default", "ctrl_half", "true_like")
 ATARI_PARTIAL_SOURCES = ("life_loss", "clipped_score_life_loss", "score", "score_life_loss")
@@ -69,6 +69,7 @@ class ExperimentConfig:
     collection_timesteps: int | None = None
     fragment_length: int | None = None
     active_learning: bool | None = None
+    active_query_strategy: str = "auto"
     dropout_samples: int = 8
     dropout_p: float = 0.25
     active_learning_batches: int = 512
@@ -78,6 +79,7 @@ class ExperimentConfig:
     reward_model_epochs: int = 100
     reward_model_patience: int = 10
     reward_model_batch_size: int = 32
+    reward_model_ensemble_size: int = 1
     model_reward_scale: float = 1.0
     model_reward_min: float | None = None
     model_reward_max: float | None = None
@@ -115,6 +117,8 @@ class SweepConfig:
     reward_model_epochs: int = 100
     reward_model_patience: int = 10
     reward_model_batch_size: int = 32
+    reward_model_ensemble_size: int = 1
+    active_query_strategy: str = "auto"
     active_learning_batches: int = 512
     pretrain_epochs: int = 25
     pretrain_batch_size: int = 256
@@ -149,7 +153,7 @@ def suite_default_envs(suite: str) -> tuple[str, ...]:
         return tuple(env for env in ("LunarLander-v3", "BipedalWalker-v3", "CarRacing-v3") if env in suite_supported_envs(BOX2D_SUITE))
     if suite == GYM_SUITE:
         return ("CartPole-v1",)
-    return ("LunarLander-v3", "Reacher-v5")
+    raise ConfigError(f"Unsupported suite '{suite}'")
 
 
 def suite_supported_envs(suite: str) -> tuple[str, ...]:
@@ -162,7 +166,7 @@ def suite_supported_envs(suite: str) -> tuple[str, ...]:
         return tuple(env_id for env_id in _registered_gym_envs() if _is_box2d_env(env_id))
     if suite == GYM_SUITE:
         return _registered_gym_envs()
-    return ("LunarLander-v3", "Reacher-v5")
+    raise ConfigError(f"Unsupported suite '{suite}'")
 
 
 def normalize_experiment_config(config: ExperimentConfig) -> ExperimentConfig:
@@ -304,6 +308,10 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("reward_hidden_sizes must contain positive integers")
     if config.reward_model_lr <= 0:
         raise ConfigError("reward_model_lr must be greater than zero")
+    if config.reward_model_ensemble_size <= 0:
+        raise ConfigError("reward_model_ensemble_size must be greater than zero")
+    if config.active_query_strategy not in ACTIVE_QUERY_STRATEGIES:
+        raise ConfigError(f"Unsupported active_query_strategy '{config.active_query_strategy}'")
     if config.device not in DEVICES:
         raise ConfigError(f"Unsupported device '{config.device}'. Supported devices: {', '.join(DEVICES)}")
     if config.final_policy not in FINAL_POLICIES:
@@ -333,6 +341,10 @@ def _validate_sweep(config: SweepConfig) -> None:
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
     if config.device not in DEVICES:
         raise ConfigError(f"Unsupported device '{config.device}'")
+    if config.reward_model_ensemble_size <= 0:
+        raise ConfigError("reward_model_ensemble_size must be greater than zero")
+    if config.active_query_strategy not in ACTIVE_QUERY_STRATEGIES:
+        raise ConfigError(f"Unsupported active_query_strategy '{config.active_query_strategy}'")
     if config.suite == MUJOCO_SUITE and config.preset not in MUJOCO_PRESETS:
         raise ConfigError(f"Unsupported MuJoCo preset '{config.preset}'")
     if config.suite == ATARI_SUITE and config.partial_source not in ATARI_PARTIAL_SOURCES:
@@ -391,10 +403,3 @@ def _validate_common_numeric(timesteps: int, rlhf_rounds: int, query_budget: int
         raise ConfigError("query_budget must be non-negative")
     if fragment_length <= 0:
         raise ConfigError("fragment_length must be greater than zero")
-
-
-def csv_mean(values: Iterable[float | int | None]) -> float | None:
-    clean = [float(value) for value in values if value is not None]
-    if not clean:
-        return None
-    return sum(clean) / len(clean)

@@ -5,6 +5,9 @@ tb_log/
 datasets/
 logs/
 __pycache__
+.pytest_cache/
+.agents/
+.deepeval/
 .DS_store
 *.csv
 *.out
