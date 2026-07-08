@@ -127,6 +127,21 @@ class RewardCompositionApiTest(unittest.TestCase):
         self.assertEqual(half_step.partial, 1.0)
         self.assertEqual(half_step.components["survive_omitted"], 1.0)
 
+    def test_true_reward_scalar_partials_load_for_multiple_suites(self):
+        half_registry = build_builtin_registry()
+        full_registry = build_builtin_registry()
+
+        half = load_partial_reference("true_reward_scalars:half_true_reward", "mujoco", half_registry).create("Hopper-v5")
+        full = load_partial_reference("true_reward_scalars:full_true_reward", "box2d", full_registry).create("BipedalWalker-v3")
+
+        half_step = half.step(None, None, None, 12.0, False, False, {})
+        full_step = full.step(None, None, None, 12.0, False, False, {})
+
+        self.assertEqual(half_step.partial, 6.0)
+        self.assertEqual(half_step.components["true_reward"], 12.0)
+        self.assertEqual(full_step.partial, 12.0)
+        self.assertEqual(full_step.components["scaled_true_reward"], 12.0)
+
     def test_config_validation_rejects_bad_rounds(self):
         with self.assertRaises(ConfigError):
             normalize_experiment_config(ExperimentConfig(rlhf_rounds=0))
