@@ -142,6 +142,40 @@ class RewardCompositionApiTest(unittest.TestCase):
         self.assertEqual(full_step.partial, 12.0)
         self.assertEqual(full_step.components["scaled_true_reward"], 12.0)
 
+    def test_manual_experiment_partials_load_for_large_benchmark_envs(self):
+        cases = [
+            ("mujoco", "Hopper-v5", "hopper_manual_partial"),
+            ("mujoco", "Hopper-v5", "hopper_manual_full"),
+            ("mujoco", "Walker2d-v5", "walker2d_manual_partial"),
+            ("mujoco", "Walker2d-v5", "walker2d_manual_full"),
+            ("atari", "ALE/Breakout-v5", "breakout_manual_partial"),
+            ("atari", "ALE/Breakout-v5", "breakout_manual_full"),
+            ("atari", "ALE/SpaceInvaders-v5", "spaceinvaders_manual_partial"),
+            ("atari", "ALE/SpaceInvaders-v5", "spaceinvaders_manual_full"),
+            ("box2d", "BipedalWalker-v3", "bipedalwalker_manual_partial"),
+            ("box2d", "BipedalWalker-v3", "bipedalwalker_manual_full"),
+            ("box2d", "CarRacing-v3", "carracing_manual_partial"),
+            ("box2d", "CarRacing-v3", "carracing_manual_full"),
+        ]
+        info = {"reward_forward": 2.0, "reward_survive": 1.0, "reward_ctrl": -0.1, "lives": 3}
+
+        for suite, env_id, name in cases:
+            with self.subTest(suite=suite, env_id=env_id, partial=name):
+                registry = build_builtin_registry()
+                partial = load_partial_reference(f"experiment_manual_rewards:{name}", suite, registry).create(env_id)
+                step = partial.step(
+                    obs=[0.0] * 24,
+                    action=[0.0, 0.5, 0.0, 0.0],
+                    next_obs=[0.0] * 24,
+                    true_reward=1.0,
+                    terminated=False,
+                    truncated=False,
+                    info=info,
+                )
+
+                self.assertIsInstance(step.partial, float)
+                self.assertIsInstance(step.components, dict)
+
     def test_config_validation_rejects_bad_rounds(self):
         with self.assertRaises(ConfigError):
             normalize_experiment_config(ExperimentConfig(rlhf_rounds=0))
