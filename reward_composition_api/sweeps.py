@@ -174,8 +174,6 @@ def build_command(config: SweepConfig, env_id: str, seed: int, variant: Variant)
 
     if config.suite == MUJOCO_SUITE:
         command.extend(["--preset", str(config.preset)])
-    if config.suite == ATARI_SUITE:
-        command.extend(["--partial-source", config.partial_source])
     if config.partial:
         command.extend(["--partial", config.partial])
     if config.progress_bar:

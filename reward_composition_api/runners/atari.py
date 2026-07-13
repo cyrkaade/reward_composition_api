@@ -56,7 +56,6 @@ class AtariExperimentRunner(BaseExperimentRunner):
             self.config.env_id,
             self.spec,
             make_env=self.profile.make_raw_env,
-            partial_source=self.config.partial_source,
             custom_partial=self.custom_partial,
             eval_freq=self.eval_freq(),
             n_eval_episodes=self.config.n_eval_episodes,
@@ -77,7 +76,6 @@ class AtariExperimentRunner(BaseExperimentRunner):
                 "partial",
                 action_n,
                 self.custom_partial,
-                partial_source=config.partial_source,
             )
             env_fn = lambda: self.profile.preference_wrapper(self.profile.make_raw_env(config.env_id), runtime)
         else:
@@ -109,7 +107,6 @@ class AtariExperimentRunner(BaseExperimentRunner):
             config.mode,
             action_n,
             self.custom_partial,
-            partial_source=config.partial_source,
             target_mean=config.model_reward_target_mean,
             target_std=config.model_reward_target_std,
             reward_min=config.model_reward_min,
@@ -141,7 +138,6 @@ class AtariExperimentRunner(BaseExperimentRunner):
                 train_env,
                 env_id=config.env_id,
                 spec=self.spec,
-                partial_source=config.partial_source,
                 custom_partial=self.custom_partial,
                 total_timesteps=collection_steps,
                 seed=config.seed * 1000 + round_index * 100,
@@ -154,9 +150,7 @@ class AtariExperimentRunner(BaseExperimentRunner):
     def partial_keys(self) -> list[str]:
         if self.custom_partial is not None:
             return [self.custom_partial.name]
-        if self.config.partial_source == "life_loss":
-            return ["life_loss_penalty"]
-        return ["life_loss_penalty", "score_partial"]
+        return []
 
     def save_and_report(
         self,
@@ -189,7 +183,6 @@ class AtariExperimentRunner(BaseExperimentRunner):
             config.env_id,
             self.spec,
             make_env=self.profile.make_raw_env,
-            partial_source=config.partial_source,
             custom_partial=self.custom_partial,
             stats_source=train_env,
             n_eval_episodes=config.final_eval_episodes,
@@ -219,7 +212,6 @@ class AtariExperimentRunner(BaseExperimentRunner):
             config.env_id,
             self.spec,
             make_env=self.profile.make_raw_env,
-            partial_source=config.partial_source,
             custom_partial=self.custom_partial,
             stats_source=final_eval_env,
             n_eval_episodes=config.final_eval_episodes,
@@ -235,10 +227,8 @@ class AtariExperimentRunner(BaseExperimentRunner):
             "fire_reset": True,
             "auto_fire_after_life_loss": True,
             "action_encoding": "one_hot",
-            "partial_source": config.partial_source,
             "partial_keys": self.partial_keys(),
             "component_keys": list(atari_component_keys(self.custom_partial)),
-            "life_loss_penalty_weight": self.spec.life_loss_penalty,
             "selected_policy_true_reward_mean": float(mean_reward),
             "selected_policy_true_reward_std": float(std_reward),
             "selected_policy_components": selected_stats,

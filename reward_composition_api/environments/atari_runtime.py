@@ -50,7 +50,6 @@ class AtariLearnedRewardRuntime(BaseLearnedRewardRuntime):
     spec: AtariRewardSpec
     composition: str
     action_n: int
-    partial_source: str = "life_loss"
     custom_partial: PartialSpec | None = None
     reward_model: RewardModel | None = None
     reward_models: list[RewardModel] | None = None
@@ -68,30 +67,18 @@ class AtariLearnedRewardRuntime(BaseLearnedRewardRuntime):
 class AtariPreferenceRewardWrapper(BasePreferenceRewardWrapper):
     def __init__(self, env, runtime: AtariLearnedRewardRuntime):
         super().__init__(env, runtime)
-        self.tracker = runtime.spec.new_tracker()
         self.partial = runtime.custom_partial.create(runtime.spec.env_id) if runtime.custom_partial else None
 
     def reset_reward_state(self, info: dict) -> dict:
-        step = self.tracker.reset(info)
         if self.partial is not None:
             self.partial.reset(info)
-        reset_info = step.as_info()
-        reset_info["model_reward"] = 0.0
-        reset_info["learned_reward"] = 0.0
-        return reset_info
+        return {"model_reward": 0.0, "learned_reward": 0.0}
 
     def partial_reward(self, previous_obs, action, observation, true_reward, terminated, truncated, info):
         if self.partial is not None:
             step = self.partial.step(previous_obs, action, observation, true_reward, terminated, truncated, info)
             return step.partial, step.components
-        step = self.tracker.step(info, true_reward=float(true_reward), partial_source=self.runtime.partial_source)
-        info.update(step.as_info())
-        return step.partial, {
-            "life_loss_penalty": step.life_loss_penalty,
-            "score_partial": step.score_partial,
-            "lost_lives": step.lost_lives,
-            "lives": step.lives,
-        }
+        return 0.0, {}
 
     def model_features(self, observation, action, partial_reward: float) -> np.ndarray:
         return reward_model_features(
@@ -204,7 +191,6 @@ def collect_policy_trajectories(
     stats_source,
     env_id: str,
     spec: AtariRewardSpec,
-    partial_source: str,
     custom_partial: PartialSpec | None,
     total_timesteps: int,
     seed: int,

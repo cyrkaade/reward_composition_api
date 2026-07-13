@@ -7,11 +7,9 @@ import numpy as np
 
 from . import run_experiment, run_sweep, summarize_runs
 from .config import (
-    ATARI_PARTIAL_SOURCES,
     ACTIVE_QUERY_STRATEGIES,
     DEVICES,
     FINAL_POLICIES,
-    MUJOCO_PARTIAL_PROFILES,
     MUJOCO_PRESETS,
     MUJOCO_SUITE,
     PLOT_MODES,
@@ -75,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_envs_parser = subparsers.add_parser("list-envs", help="List supported environments")
     list_envs_parser.add_argument("--suite", choices=SUITES, default=None)
 
-    list_partials_parser = subparsers.add_parser("list-partials", help="List built-in partial rewards")
+    list_partials_parser = subparsers.add_parser("list-partials", help="List packaged partial rewards")
     list_partials_parser.add_argument("--suite", choices=TRAIN_SUITES, default=None)
 
     validate_parser = subparsers.add_parser("validate-partial", help="Import and smoke-check a partial reward")
@@ -106,8 +104,6 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--smooth-window", type=int, default=5)
     parser.add_argument("--progress-bar", action="store_true")
     parser.add_argument("--preset", choices=MUJOCO_PRESETS, default=None)
-    parser.add_argument("--partial-profile", choices=MUJOCO_PARTIAL_PROFILES, default="default")
-    parser.add_argument("--partial-source", choices=ATARI_PARTIAL_SOURCES, default="life_loss")
     parser.add_argument("--partial", "--closed-form-file", dest="partial", default=None)
 
     parser.add_argument("--rlhf-rounds", type=int, default=5)
@@ -178,7 +174,6 @@ def add_sweep_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pretrain-lr", type=float, default=1e-3)
     parser.add_argument("--device", choices=DEVICES, default="auto")
     parser.add_argument("--preset", choices=MUJOCO_PRESETS, default=None)
-    parser.add_argument("--partial-source", choices=ATARI_PARTIAL_SOURCES, default="life_loss")
     parser.add_argument("--partial", default=None)
     parser.add_argument("--progress-bar", action="store_true")
     parser.add_argument("--normalize-model-reward", action="store_true")
@@ -209,8 +204,6 @@ def _handle_train(args) -> int:
         smooth_window=args.smooth_window,
         progress_bar=args.progress_bar,
         preset=args.preset,
-        partial_profile=args.partial_profile,
-        partial_source=args.partial_source,
         partial=args.partial,
         rlhf_rounds=args.rlhf_rounds,
         query_budget=args.query_budget,
@@ -279,7 +272,6 @@ def _handle_sweep(args) -> int:
             pretrain_lr=args.pretrain_lr,
             device=args.device,
             preset=args.preset,
-            partial_source=args.partial_source,
             progress_bar=args.progress_bar,
             normalize_model_reward=args.normalize_model_reward,
             model_reward_min=args.model_reward_min,

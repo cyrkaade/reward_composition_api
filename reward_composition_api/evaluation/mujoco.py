@@ -34,17 +34,13 @@ def evaluate_mujoco_components(
         component_keys=_component_keys(spec, custom_partial),
         model_observation=normalize_obs,
         action_converter=lambda _env, action: action[0],
-        default_partial_step=lambda _obs, _action, _new_obs, _reward, _terminated, _truncated, info: (
-            spec.partial_reward(info),
-            spec.components(info),
-        ),
     )
 
 
 def _component_keys(spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None) -> tuple[str, ...]:
     if custom_partial is not None:
         return custom_partial.component_keys
-    return spec.component_keys
+    return ()
 
 
 def component_fieldnames(spec: MuJoCoRewardSpec, custom_partial: PartialSpec | None = None) -> list[str]:

@@ -47,7 +47,6 @@ ATARI_SUMMARY_FIELDS = [
     "reward_model_ensemble_size",
     "pretrain_reward_model",
     "pretrain_target",
-    "life_loss_penalty_weight",
     "best_logged_true_reward",
     "best_logged_timestep",
     "selected_policy_true_reward_mean",
@@ -118,7 +117,6 @@ def load_metadata_rows(root: Path, suite: str) -> list[dict]:
         if suite == ATARI_SUITE:
             row.update(
                 {
-                    "life_loss_penalty_weight": metadata.get("life_loss_penalty_weight"),
                     "selected_mean_lost_lives": components.get("mean_lost_lives"),
                     "selected_mean_lives": components.get("mean_lives"),
                 }

@@ -73,19 +73,17 @@ class DummyLunarEnv(DiscreteOneStepEnv):
 
 
 class LearnedRewardWrapperTest(unittest.TestCase):
-    def test_mujoco_wrapper_reward_composition_modes(self):
+    def test_mujoco_wrapper_without_manual_partial_uses_zero_partial(self):
         spec = MuJoCoRewardSpec(
             env_id="DummyMuJoCo-v0",
             slug="dummy",
-            partial_keys=("reward_dist",),
-            component_keys=("reward_dist", "reward_ctrl"),
         )
 
         for mode, expected_reward in {
-            "partial": 2.5,
+            "partial": 0.0,
             "feedback": 0.0,
-            "naive": 2.5,
-            "delta": 2.5,
+            "naive": 0.0,
+            "delta": 0.0,
         }.items():
             with self.subTest(mode=mode):
                 runtime = MuJoCoLearnedRewardRuntime(spec=spec, composition=mode)
@@ -101,7 +99,7 @@ class LearnedRewardWrapperTest(unittest.TestCase):
                 self.assertTrue(terminated)
                 self.assertFalse(truncated)
                 self.assertEqual(info["true_reward"], 5.0)
-                self.assertEqual(info["partial_reward"], 2.5)
+                self.assertEqual(info["partial_reward"], 0.0)
                 self.assertEqual(info["model_reward"], 0.0)
                 self.assertEqual(info["learned_reward"], expected_reward)
 
@@ -109,8 +107,6 @@ class LearnedRewardWrapperTest(unittest.TestCase):
         spec = MuJoCoRewardSpec(
             env_id="DummyMuJoCo-v0",
             slug="dummy",
-            partial_keys=("reward_dist",),
-            component_keys=("reward_dist",),
         )
         runtime = MuJoCoLearnedRewardRuntime(
             spec=spec,
@@ -137,8 +133,6 @@ class LearnedRewardWrapperTest(unittest.TestCase):
         spec = MuJoCoRewardSpec(
             env_id="DummyMuJoCo-v0",
             slug="dummy",
-            partial_keys=("reward_dist",),
-            component_keys=("reward_dist",),
         )
         runtime = MuJoCoLearnedRewardRuntime(
             spec=spec,
@@ -177,7 +171,7 @@ class LearnedRewardWrapperTest(unittest.TestCase):
         self.assertEqual(info["model_reward"], 0.0)
         self.assertEqual(info["partial_reward"], 0.0)
 
-    def test_atari_partial_mode_updates_reset_and_step_info(self):
+    def test_atari_without_manual_partial_uses_zero_partial(self):
         spec = type(
             "Spec",
             (),
@@ -192,10 +186,10 @@ class LearnedRewardWrapperTest(unittest.TestCase):
         _, reset_info = wrapper.reset()
         _, reward, _, _, step_info = wrapper.step(1)
 
-        self.assertEqual(reset_info["partial_reward"], 0.0)
-        self.assertEqual(reward, -1.0)
-        self.assertEqual(step_info["partial_reward"], -1.0)
-        self.assertEqual(step_info["learned_reward"], -1.0)
+        self.assertEqual(reset_info["learned_reward"], 0.0)
+        self.assertEqual(reward, 0.0)
+        self.assertEqual(step_info["partial_reward"], 0.0)
+        self.assertEqual(step_info["learned_reward"], 0.0)
 
     def test_lunar_lander_save_info_exposes_terminal_flags(self):
         wrapper = LunarLanderSaveInfo(DummyLunarEnv())
@@ -228,7 +222,7 @@ class Tracker:
     def reset(self, info):
         return TrackerStep(partial=0.0, lost_lives=0.0, lives=float(info.get("lives", 0.0)))
 
-    def step(self, info, true_reward=0.0, partial_source="life_loss"):
+    def step(self, info, true_reward=0.0):
         return TrackerStep(partial=-1.0, lost_lives=1.0, lives=float(info.get("lives", 0.0)))
 
 

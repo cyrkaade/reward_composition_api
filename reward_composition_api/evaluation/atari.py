@@ -17,29 +17,12 @@ def evaluate_atari_components(
     env_id: str,
     spec: AtariRewardSpec,
     make_env,
-    partial_source: str = "life_loss",
     custom_partial: PartialSpec | None = None,
     stats_source=None,
     n_eval_episodes: int = 10,
     seed: int = 0,
     deterministic: bool = True,
 ):
-    tracker = None
-
-    def reset_tracker(info: dict) -> None:
-        nonlocal tracker
-        tracker = spec.new_tracker()
-        tracker.reset(info)
-
-    def default_partial_step(_obs, _action, _new_obs, reward, _terminated, _truncated, info):
-        step = tracker.step(info, true_reward=reward, partial_source=partial_source)
-        return step.partial, {
-            "life_loss_penalty": step.life_loss_penalty,
-            "score_partial": step.score_partial,
-            "lost_lives": step.lost_lives,
-            "lives": step.lives,
-        }
-
     return evaluate_policy_components(
         model=model,
         env_id=env_id,
@@ -52,15 +35,13 @@ def evaluate_atari_components(
         component_keys=_component_keys(custom_partial),
         model_observation=normalize_obs,
         action_converter=lambda _env, action: int(np.asarray(action).reshape(-1)[0]),
-        default_partial_step=default_partial_step,
-        reset_reward_state=reset_tracker,
     )
 
 
 def _component_keys(custom_partial: PartialSpec | None) -> tuple[str, ...]:
     if custom_partial is not None:
         return custom_partial.component_keys
-    return ("life_loss_penalty", "score_partial", "lost_lives", "lives")
+    return ()
 
 
 def component_keys(custom_partial: PartialSpec | None = None) -> list[str]:
@@ -85,7 +66,6 @@ class AtariComponentEvalCallback(ComponentEvalCallback):
         env_id: str,
         spec: AtariRewardSpec,
         make_env,
-        partial_source: str,
         custom_partial: PartialSpec | None,
         eval_freq: int,
         n_eval_episodes: int,
@@ -96,7 +76,6 @@ class AtariComponentEvalCallback(ComponentEvalCallback):
         self.env_id = env_id
         self.spec = spec
         self.make_env = make_env
-        self.partial_source = partial_source
         self.custom_partial = custom_partial
 
     def component_fieldnames(self) -> list[str]:
@@ -108,7 +87,6 @@ class AtariComponentEvalCallback(ComponentEvalCallback):
             self.env_id,
             self.spec,
             make_env=self.make_env,
-            partial_source=self.partial_source,
             custom_partial=self.custom_partial,
             stats_source=self.training_env,
             n_eval_episodes=self.n_eval_episodes,

@@ -139,10 +139,10 @@ Any installed MuJoCo env with a custom partial:
 python -m reward_composition_api train --suite mujoco --env-id Ant-v5 --mode delta --partial my_ant_reward --timesteps 100000 --n-envs 4
 ```
 
-Atari game:
+Atari game with a custom partial:
 
 ```powershell
-python -m reward_composition_api train --suite atari --env-id ALE/Pong-v5 --mode delta --partial-source life_loss --timesteps 1000000 --n-envs 8
+python -m reward_composition_api train --suite atari --env-id ALE/Pong-v5 --mode delta --partial my_atari_reward --timesteps 1000000 --n-envs 8
 ```
 
 Generic Gym dry-run sweep:

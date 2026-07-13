@@ -22,6 +22,7 @@ SUITES = TRAIN_SUITES
 TRAIN_MODES = ("true", "partial", "feedback", "naive", "delta")
 ATARI_TRAIN_MODES = ("true", "partial", "feedback", "naive", "delta")
 PREFERENCE_MODES = ("feedback", "naive", "delta")
+PARTIAL_REQUIRED_MODES = ("partial", "naive", "delta")
 
 FINAL_POLICIES = ("best", "last")
 PLOT_MODES = ("best", "raw")
@@ -29,8 +30,6 @@ DEVICES = ("auto", "cpu", "cuda")
 PRETRAIN_TARGETS = ("partial", "residual", "true")
 ACTIVE_QUERY_STRATEGIES = ("auto", "dropout", "ensemble")
 MUJOCO_PRESETS = ("auto", "generic", "reacher")
-MUJOCO_PARTIAL_PROFILES = ("default", "ctrl_half", "true_like")
-ATARI_PARTIAL_SOURCES = ("life_loss", "clipped_score_life_loss", "score", "score_life_loss")
 
 
 @dataclass(frozen=True)
@@ -55,8 +54,6 @@ class ExperimentConfig:
     progress_bar: bool = False
 
     preset: str | None = None
-    partial_profile: str = "default"
-    partial_source: str = "life_loss"
     partial: str | None = None
 
     rlhf_rounds: int = 5
@@ -125,7 +122,6 @@ class SweepConfig:
     pretrain_lr: float = 1e-3
     device: str = "auto"
     preset: str | None = None
-    partial_source: str = "life_loss"
     progress_bar: bool = False
     normalize_model_reward: bool = False
     model_reward_min: float | None = None
@@ -295,6 +291,8 @@ def _validate_experiment(config: ExperimentConfig) -> None:
     modes = ATARI_TRAIN_MODES if config.suite == ATARI_SUITE else TRAIN_MODES
     if config.mode not in modes:
         raise ConfigError(f"Unsupported mode '{config.mode}' for suite '{config.suite}'. Supported modes: {', '.join(modes)}")
+    if config.mode in PARTIAL_REQUIRED_MODES and not config.partial:
+        raise ConfigError(f"Mode '{config.mode}' requires --partial with a manually written partial reward.")
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
     if config.initial_timesteps < 0:
         raise ConfigError("initial_timesteps must be non-negative")
@@ -323,10 +321,6 @@ def _validate_experiment(config: ExperimentConfig) -> None:
     if config.suite == MUJOCO_SUITE:
         if config.preset not in MUJOCO_PRESETS:
             raise ConfigError(f"Unsupported MuJoCo preset '{config.preset}'")
-        if config.partial_profile not in MUJOCO_PARTIAL_PROFILES:
-            raise ConfigError(f"Unsupported MuJoCo partial profile '{config.partial_profile}'")
-    if config.suite == ATARI_SUITE and config.partial_source not in ATARI_PARTIAL_SOURCES:
-        raise ConfigError(f"Unsupported Atari partial source '{config.partial_source}'")
 
 
 def _validate_sweep(config: SweepConfig) -> None:
@@ -338,6 +332,8 @@ def _validate_sweep(config: SweepConfig) -> None:
         raise ConfigError(f"Unsupported envs for suite '{config.suite}': {', '.join(bad_envs)}")
     if not config.seeds:
         raise ConfigError("At least one seed is required")
+    if not config.partial:
+        raise ConfigError("Sweeps include partial-reward variants and require --partial.")
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
     if config.device not in DEVICES:
         raise ConfigError(f"Unsupported device '{config.device}'")
@@ -347,8 +343,6 @@ def _validate_sweep(config: SweepConfig) -> None:
         raise ConfigError(f"Unsupported active_query_strategy '{config.active_query_strategy}'")
     if config.suite == MUJOCO_SUITE and config.preset not in MUJOCO_PRESETS:
         raise ConfigError(f"Unsupported MuJoCo preset '{config.preset}'")
-    if config.suite == ATARI_SUITE and config.partial_source not in ATARI_PARTIAL_SOURCES:
-        raise ConfigError(f"Unsupported Atari partial source '{config.partial_source}'")
 
 
 def _default_env_id(suite: str) -> str:

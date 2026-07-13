@@ -210,13 +210,7 @@ class MuJoCoExperimentRunner(BaseExperimentRunner):
             **self.common_metadata(actual_timesteps, synthetic_queries, best_logged_reward, best_logged_timestep),
             "env_slug": self.spec.slug,
             "preset": config.preset,
-            "partial_profile": config.partial_profile,
-            "partial_keys": list(self.spec.partial_keys) if self.custom_partial is None else [self.custom_partial.name],
-            "partial_weights": (
-                list(self.spec.partial_weights or tuple(1.0 for _ in self.spec.partial_keys))
-                if self.custom_partial is None
-                else None
-            ),
+            "partial_keys": [] if self.custom_partial is None else [self.custom_partial.name],
             "component_keys": list(mujoco_component_keys(self.spec, self.custom_partial)),
             "selected_policy_true_reward_mean": float(mean_reward),
             "selected_policy_true_reward_std": float(std_reward),

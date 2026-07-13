@@ -46,7 +46,6 @@ class AtariEnvironmentProfile:
             spec=spec,
             composition=composition,
             action_n=action_n,
-            partial_source=kwargs.pop("partial_source", "life_loss"),
             custom_partial=custom_partial,
             **kwargs,
         )
@@ -70,7 +69,6 @@ class AtariEnvironmentProfile:
         stats_source,
         env_id: str,
         spec: AtariRewardSpec,
-        partial_source: str,
         custom_partial: PartialSpec | None,
         total_timesteps: int,
         seed: int,
@@ -80,7 +78,6 @@ class AtariEnvironmentProfile:
             stats_source,
             env_id=env_id,
             spec=spec,
-            partial_source=partial_source,
             custom_partial=custom_partial,
             total_timesteps=total_timesteps,
             seed=seed,

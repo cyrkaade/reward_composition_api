@@ -23,42 +23,19 @@ from reward_composition_api.reward_models.reward_model import RewardModel
 
 
 class RewardCompositionApiTest(unittest.TestCase):
-    def test_builtin_mujoco_partial_matches_component_profile(self):
+    def test_builtin_partial_registry_is_empty(self):
         registry = build_builtin_registry()
-        partial = registry.resolve("default", "mujoco").create("Reacher-v5")
-        partial.reset({"reward_dist": 0.0, "reward_ctrl": 0.0})
 
-        step = partial.step(
-            obs=None,
-            action=None,
-            next_obs=None,
-            true_reward=0.0,
-            terminated=False,
-            truncated=False,
-            info={"reward_dist": 1.25, "reward_ctrl": -0.2},
-        )
+        self.assertEqual(registry.list(), [])
 
-        self.assertEqual(step.partial, 1.25)
-        self.assertEqual(step.components["reward_dist"], 1.25)
-        self.assertEqual(step.components["reward_ctrl"], -0.2)
+    def test_partial_modes_require_manual_partial(self):
+        for mode in ("partial", "naive", "delta"):
+            with self.subTest(mode=mode):
+                with self.assertRaises(ConfigError):
+                    normalize_experiment_config(ExperimentConfig(mode=mode))
 
-    def test_builtin_atari_partial_tracks_life_loss(self):
-        registry = build_builtin_registry()
-        partial = registry.resolve("life_loss", "atari").create("ALE/Breakout-v5")
-        partial.reset({"lives": 5})
-
-        step = partial.step(
-            obs=None,
-            action=0,
-            next_obs=None,
-            true_reward=0.0,
-            terminated=False,
-            truncated=False,
-            info={"lives": 4},
-        )
-
-        self.assertEqual(step.partial, -1.0)
-        self.assertEqual(step.components["lost_lives"], 1.0)
+        config = normalize_experiment_config(ExperimentConfig(mode="delta", partial="true_reward_scalars:half_true_reward"))
+        self.assertEqual(config.partial, "true_reward_scalars:half_true_reward")
 
     def test_user_partial_module_loading(self):
         registry = build_builtin_registry()
@@ -129,7 +106,7 @@ class RewardCompositionApiTest(unittest.TestCase):
 
     def test_config_validation_rejects_bad_rounds(self):
         with self.assertRaises(ConfigError):
-            normalize_experiment_config(ExperimentConfig(rlhf_rounds=0))
+            normalize_experiment_config(ExperimentConfig(mode="true", rlhf_rounds=0))
 
     def test_legacy_suite_is_not_advertised(self):
         with contextlib.redirect_stderr(io.StringIO()):
@@ -188,6 +165,7 @@ class RewardCompositionApiTest(unittest.TestCase):
                         timesteps=500_000,
                         log_dir=root / "runs",
                         manifest=root / "manifest.jsonl",
+                        partial="true_reward_scalars:half_true_reward",
                         execute=False,
                     )
                 )
@@ -212,6 +190,7 @@ class RewardCompositionApiTest(unittest.TestCase):
                     seeds=(2,),
                     timesteps=5_000_000,
                     log_dir=Path(tmp),
+                    partial="true_reward_scalars:half_true_reward",
                 )
             )
 
@@ -229,6 +208,7 @@ class RewardCompositionApiTest(unittest.TestCase):
                     env_ids=("Reacher-v5",),
                     seeds=(2,),
                     log_dir=Path(tmp),
+                    partial="true_reward_scalars:half_true_reward",
                     reward_model_ensemble_size=5,
                     active_query_strategy="ensemble",
                 )
@@ -245,6 +225,7 @@ class RewardCompositionApiTest(unittest.TestCase):
             ExperimentConfig(
                 suite="box2d",
                 env_id="LunarLander-v3",
+                mode="true",
             )
         )
 
@@ -301,7 +282,7 @@ class RewardCompositionApiTest(unittest.TestCase):
             ["list-envs", "--suite", "mujoco"],
             ["list-envs", "--suite", "gym"],
             ["list-partials", "--suite", "atari"],
-            ["validate-partial", "--suite", "mujoco", "--env-id", "Reacher-v5", "--partial", "default"],
+            ["validate-partial", "--suite", "mujoco", "--env-id", "Hopper-v5", "--partial", "hopper_half_forward"],
             ["validate-partial", "--suite", "gym", "--env-id", "CartPole-v1", "--partial", "cartpole_alive"],
         ):
             with self.subTest(argv=argv):

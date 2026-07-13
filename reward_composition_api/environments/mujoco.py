@@ -15,7 +15,7 @@ from . import mujoco_runtime as plumbing
 
 class MuJoCoEnvironmentProfile:
     def reward_spec(self, config: ExperimentConfig) -> MuJoCoRewardSpec:
-        return get_mujoco_reward_spec(config.env_id).with_partial_profile(config.partial_profile)
+        return get_mujoco_reward_spec(config.env_id)
 
     def make_raw_env(self, env_id: str):
         return plumbing.make_raw_env(env_id)

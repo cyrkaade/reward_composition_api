@@ -98,7 +98,7 @@ class MuJoCoPreferenceRewardWrapper(BasePreferenceRewardWrapper):
 
     def partial_reward(self, previous_obs, action, observation, true_reward, terminated, truncated, info):
         if self.partial is None:
-            return self.runtime.spec.partial_reward(info), {}
+            return 0.0, {}
         step = self.partial.step(previous_obs, action, observation, true_reward, terminated, truncated, info)
         return step.partial, step.components
 

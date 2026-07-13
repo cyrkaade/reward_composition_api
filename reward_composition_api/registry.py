@@ -187,7 +187,7 @@ def load_partial_reference(reference: str, suite: str, registry: PartialRegistry
                 return registry.resolve(Path(reference).stem, "custom")
     module_ref, partial_name = reference.rsplit(":", 1)
     if not module_ref or not partial_name:
-        raise PartialRegistryError("Partial references must be '<module>:<partial_name>' or a built-in name")
+        raise PartialRegistryError("Partial references must be '<module>:<partial_name>' or a partial module name")
     module_ref = _resolve_partials_module(module_ref)
     load_user_partial_module(module_ref, registry, default_name=partial_name, default_suite=suite)
     try:
