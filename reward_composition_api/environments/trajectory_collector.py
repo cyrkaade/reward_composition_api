@@ -150,7 +150,9 @@ class BufferingWrapper(VecEnvWrapper):
 
 class TrajectoryCollector:
     def __init__(self, vec_env: VecEnv, agent: PPO, verbose: bool = False):
-        self.vec_env, self.buffering_wrapper = _buffered_vec_env(vec_env)
+        self.source_vec_env = vec_env
+        self.vec_env = vec_env
+        self.buffering_wrapper: BufferingWrapper | None = None
         self.agent = agent
         self.verbose = verbose
 
@@ -163,6 +165,7 @@ class TrajectoryCollector:
             trained_steps += self.vec_env.num_envs
 
     def rollout_trajectories(self, total_timesteps: int, seed: int | None = None) -> list[Trajectory]:
+        self.vec_env, self.buffering_wrapper, restore_env = _buffered_vec_env(self.source_vec_env)
         previous_training = self.vec_env.training if isinstance(self.vec_env, VecNormalize) else None
         if isinstance(self.vec_env, VecNormalize):
             self.vec_env.training = False
@@ -174,18 +177,28 @@ class TrajectoryCollector:
         finally:
             if isinstance(self.vec_env, VecNormalize):
                 self.vec_env.training = bool(previous_training)
+            restore_env()
+            self.vec_env = self.source_vec_env
             _clear_model_rollout_state(self.agent)
 
 
-def _buffered_vec_env(vec_env: VecEnv) -> tuple[VecEnv, BufferingWrapper]:
+def _buffered_vec_env(vec_env: VecEnv) -> tuple[VecEnv, BufferingWrapper, Callable[[], None]]:
     if isinstance(vec_env, BufferingWrapper):
-        return vec_env, vec_env
+        return vec_env, vec_env, lambda: None
     if isinstance(vec_env, VecNormalize):
-        if not isinstance(vec_env.venv, BufferingWrapper):
-            vec_env.venv = BufferingWrapper(vec_env.venv)
-        return vec_env, vec_env.venv
+        original_venv = vec_env.venv
+        if isinstance(original_venv, BufferingWrapper):
+            return vec_env, original_venv, lambda: None
+        wrapper = BufferingWrapper(original_venv)
+        vec_env.venv = wrapper
+
+        def restore() -> None:
+            if vec_env.venv is wrapper:
+                vec_env.venv = original_venv
+
+        return vec_env, wrapper, restore
     wrapper = BufferingWrapper(vec_env)
-    return wrapper, wrapper
+    return wrapper, wrapper, lambda: None
 
 
 def _batch_item(value, index: int):

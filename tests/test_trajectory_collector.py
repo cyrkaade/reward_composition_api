@@ -214,12 +214,14 @@ class PolicyTrajectoryCollectorTest(unittest.TestCase):
             norm_reward=True,
             training=True,
         )
+        original_venv = vec_env.venv
         collector = TrajectoryCollector(agent=model, vec_env=vec_env)
 
         trajectories = collector.rollout_trajectories(total_timesteps=2, seed=11)
 
-        self.assertIsInstance(vec_env.venv, BufferingWrapper)
+        self.assertIs(vec_env.venv, original_venv)
         self.assertTrue(vec_env.training)
+        self.assertIsInstance(collector.buffering_wrapper, BufferingWrapper)
         self.assertEqual(len(trajectories[0].states), 2)
         self.assertTrue(np.allclose(trajectories[0].states[-1]["obs"], np.asarray([2.0], dtype=np.float32)))
 
