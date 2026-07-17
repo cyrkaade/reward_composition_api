@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rcomp"
+version = "0.1.0"
+description = "Compare RLHF reward-composition strategies (true/partial/feedback/naive/delta) with PPO"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "gymnasium[atari,box2d,mujoco]>=1.0",
+    "stable-baselines3>=2.4",
+    "torch>=2.2,<3",
+    "numpy>=1.26",
+    "matplotlib>=3.10",
+    "pandas>=2.3",
+    "tqdm>=4.67",
+    "rich>=14.0",
+    "imageio>=2.37",
+    "tensorboard>=2.16",
+    "ale-py>=0.10",
+    "autorom[accept-rom-license]>=0.6.1",
+    "swig>=4.2",
+]
+
+[project.scripts]
+rcomp = "rcomp.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rcomp*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
