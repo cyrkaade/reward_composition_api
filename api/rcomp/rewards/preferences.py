@@ -287,6 +287,8 @@ def train_preference_reward_model(
     learning_rate: float = 0.01,
     partial_mean: float = 0.0,
     partial_std: float = 1.0,
+    partial_alpha: float = 1.0,
+    partial_alpha_penalty: float = 0.0,
 ) -> None:
     if not train_pairs:
         return
@@ -314,14 +316,17 @@ def train_preference_reward_model(
             rating_batch = ratings[batch_start:batch_end]
 
             if use_delta_loss:
+                alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
                 t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
                 t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
-                loss = preference_loss(y1, y2, t1_partial, t2_partial, rating_batch)
+                loss = preference_loss(y1, y2, t1_partial, t2_partial, rating_batch, alpha)
             else:
                 loss = preference_loss(y1, y2, rating_batch)
 
             loss += (output_regularization_loss.forward(y1) + output_regularization_loss.forward(y2)) / 2
             total_loss = loss.sum() + regularization_loss.forward(reward_model)
+            if use_delta_loss and reward_model.alpha is not None:
+                total_loss = total_loss + partial_alpha_penalty * (reward_model.alpha - partial_alpha) ** 2
 
             optimizer.zero_grad()
             total_loss.backward()
@@ -330,7 +335,7 @@ def train_preference_reward_model(
             batches += 1
 
         val_loss = validate_preference_reward_model(
-            reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss, partial_mean, partial_std
+            reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss, partial_mean, partial_std, partial_alpha
         )
         print(f"reward model epoch {epoch}: train_loss={running_loss / max(batches, 1):.4f}, val_loss={val_loss:.4f}")
         if val_loss < best_val:
@@ -368,6 +373,8 @@ def train_preference_reward_ensemble(
     learning_rate: float = 0.01,
     partial_mean: float = 0.0,
     partial_std: float = 1.0,
+    partial_alpha: float = 1.0,
+    partial_alpha_penalty: float = 0.0,
 ) -> None:
     if not rated_pairs:
         return
@@ -401,6 +408,8 @@ def train_preference_reward_ensemble(
             learning_rate=learning_rate,
             partial_mean=partial_mean,
             partial_std=partial_std,
+            partial_alpha=partial_alpha,
+            partial_alpha_penalty=partial_alpha_penalty,
         )
 
 
@@ -412,6 +421,7 @@ def validate_preference_reward_model(
     use_delta_loss: bool,
     partial_mean: float = 0.0,
     partial_std: float = 1.0,
+    partial_alpha: float = 1.0,
 ) -> float:
     if not val_pairs:
         return 0.0
@@ -420,7 +430,8 @@ def validate_preference_reward_model(
         y1 = reward_model(t1_tensor)
         y2 = reward_model(t2_tensor)
         if use_delta_loss:
+            alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
             t1_partial = partial_reward_tensor(val_pairs, "t1", partial_mean, partial_std)
             t2_partial = partial_reward_tensor(val_pairs, "t2", partial_mean, partial_std)
-            return float(preference_loss(y1, y2, t1_partial, t2_partial, ratings).mean().item())
+            return float(preference_loss(y1, y2, t1_partial, t2_partial, ratings, alpha).mean().item())
         return float(preference_loss(y1, y2, ratings).mean().item())

@@ -196,6 +196,42 @@ def test_delta_loss_prefers_matching_partials():
     assert float(aligned) < float(misaligned)
 
 
+def test_delta_loss_alpha_scales_partial_base():
+    loss = DeltaLoss()
+    y1 = th.zeros((1, 2, 1))
+    y2 = th.zeros((1, 2, 1))
+    good_base = th.full((1, 2, 1), 2.0)
+    bad_base = th.zeros((1, 2, 1))
+    target = th.ones(1)
+
+    weak = loss(y1, y2, good_base, bad_base, target, alpha=0.5)
+    strong = loss(y1, y2, good_base, bad_base, target, alpha=2.0)
+
+    assert float(strong) < float(weak)
+
+
+def test_learned_alpha_stays_anchored():
+    th.manual_seed(0)
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,), learn_alpha=True, alpha_init=1.0)
+    pairs = make_rated_pairs(6)
+
+    train_preference_reward_model(
+        model,
+        pairs[:4],
+        pairs[4:],
+        convert_traj=convert_traj,
+        use_delta_loss=True,
+        batch_size=2,
+        epochs=3,
+        patience=5,
+        partial_alpha=1.0,
+        partial_alpha_penalty=1.0,
+    )
+
+    assert model.alpha is not None
+    assert abs(float(model.alpha) - 1.0) < 1.0
+
+
 def test_pairwise_loss_prefers_higher_first_input():
     loss = PairwiseLoss()
     high = th.full((1, 2, 1), 3.0)

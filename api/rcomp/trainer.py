@@ -234,7 +234,7 @@ class RlhfTrainer:
             dropout_p=config.dropout_p,
             active_learning_batches=config.active_learning_batches,
             active_query_strategy=config.active_query_strategy,
-            transform_partial=self.runtime.transform_partial_reward,
+            transform_partial=self.runtime.composed_partial_reward,
         )
         rated_pairs = rate_pairs_from_true_reward(pairs)
         split = int(len(rated_pairs) * 0.8)
@@ -258,6 +258,8 @@ class RlhfTrainer:
                     learning_rate=config.reward_model_lr,
                     partial_mean=self.runtime.partial_mean,
                     partial_std=self.runtime.partial_std,
+                    partial_alpha=config.partial_alpha,
+                    partial_alpha_penalty=config.partial_alpha_penalty,
                 )
                 self.runtime.reward_model = None
                 self.runtime.reward_models = self.reward_models
@@ -274,9 +276,15 @@ class RlhfTrainer:
                     learning_rate=config.reward_model_lr,
                     partial_mean=self.runtime.partial_mean,
                     partial_std=self.runtime.partial_std,
+                    partial_alpha=config.partial_alpha,
+                    partial_alpha_penalty=config.partial_alpha_penalty,
                 )
                 self.runtime.reward_model = self.reward_model
                 self.runtime.reward_models = None
+            if config.learn_partial_alpha:
+                alphas = [float(model.alpha.item()) for model in self.reward_models if model.alpha is not None]
+                self.runtime.partial_alpha = sum(alphas) / len(alphas)
+                print(f"learned partial alpha: {self.runtime.partial_alpha:.4f}")
             stat_trajectories = [pair.t1 for pair in self.rated_train + self.rated_val] + [
                 pair.t2 for pair in self.rated_train + self.rated_val
             ]
@@ -322,7 +330,12 @@ def default_run_name(config: ExperimentConfig, suite: Suite) -> str:
 
 def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel | list[RewardModel]:
     models = [
-        RewardModel(input_size=input_size, hidden_sizes=config.reward_hidden_sizes)
+        RewardModel(
+            input_size=input_size,
+            hidden_sizes=config.reward_hidden_sizes,
+            learn_alpha=config.learn_partial_alpha,
+            alpha_init=config.partial_alpha,
+        )
         for _ in range(config.reward_model_ensemble_size)
     ]
     return models[0] if len(models) == 1 else models
@@ -446,6 +459,7 @@ class ExperimentRunner:
             reward_scale=config.model_reward_scale,
             normalize=config.normalize_model_reward,
             normalize_partial=config.normalize_partial_reward,
+            partial_alpha=config.partial_alpha,
             include_partial_feature=include_partial_feature(config),
         )
         train_env, eval_env, callbacks = self.build_envs_and_callbacks(
@@ -616,6 +630,9 @@ class ExperimentRunner:
             "pretrain_target": config.pretrain_target if config.pretrain_reward_model else None,
             "include_partial_feature": include_partial_feature(config) if is_preference else None,
             "normalize_partial_reward": config.normalize_partial_reward if is_preference else None,
+            "partial_alpha": config.partial_alpha if is_preference else None,
+            "learn_partial_alpha": config.learn_partial_alpha if is_preference else None,
+            "partial_alpha_penalty": config.partial_alpha_penalty if config.learn_partial_alpha else None,
             "partial_reference": config.partial,
             "best_logged_true_reward": best_logged_reward,
             "best_logged_timestep": best_logged_timestep,
@@ -635,6 +652,7 @@ class ExperimentRunner:
             "model_reward_target_std": runtime.target_std,
             "partial_reward_mean": runtime.partial_mean,
             "partial_reward_std": runtime.partial_std,
+            "final_partial_alpha": runtime.partial_alpha,
             "reward_composition": runtime.composition,
         }
 

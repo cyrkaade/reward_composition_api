@@ -90,6 +90,9 @@ class ExperimentConfig:
     model_reward_target_std: float = _f(1.0, "Target std for normalized model rewards")
     include_partial_feature: bool | None = _f(None, "Feed the partial reward to the reward model (defaults to naive/delta modes)")
     normalize_partial_reward: bool = _f(False, "Normalize the partial reward with running stats in the model input, delta loss, and composed reward")
+    partial_alpha: float = _f(1.0, "Expert-confidence coefficient on the partial reward in the delta loss and composed reward")
+    learn_partial_alpha: bool = _f(False, "Learn alpha as a reward-model parameter, anchored to partial_alpha by an MSE term")
+    partial_alpha_penalty: float = _f(1.0, "Weight of the mse(alpha, partial_alpha) anchor when alpha is learned")
 
     pretrain_reward_model: bool = _f(False, "Pretrain the reward model before preference training")
     pretrain_target: str = _f("partial", "Pretraining regression target", choices=PRETRAIN_TARGETS)
@@ -226,6 +229,12 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError(f"Mode '{config.mode}' requires --partial with a manually written partial reward.")
     if config.normalize_partial_reward and config.mode not in ("naive", "delta"):
         raise ConfigError("normalize_partial_reward requires mode 'naive' or 'delta'")
+    if config.partial_alpha != 1.0 and config.mode not in ("naive", "delta"):
+        raise ConfigError("partial_alpha requires mode 'naive' or 'delta'")
+    if config.learn_partial_alpha and config.mode != "delta":
+        raise ConfigError("learn_partial_alpha requires mode 'delta'")
+    if config.partial_alpha_penalty < 0:
+        raise ConfigError("partial_alpha_penalty must be non-negative")
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
     if config.initial_timesteps < 0:
         raise ConfigError("initial_timesteps must be non-negative")

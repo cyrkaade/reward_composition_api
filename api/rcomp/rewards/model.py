@@ -3,7 +3,7 @@ from torch import Tensor
 
 
 class RewardModel(th.nn.Module):
-    def __init__(self, input_size=10, hidden_sizes=(200,)):
+    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0):
         super().__init__()
         layers = []
         last_size = input_size
@@ -13,6 +13,7 @@ class RewardModel(th.nn.Module):
             last_size = hidden_size
         layers.append(th.nn.Linear(last_size, 1))
         self.net = th.nn.Sequential(*layers)
+        self.alpha = th.nn.Parameter(th.tensor(float(alpha_init))) if learn_alpha else None
 
     def forward(self, x):
         return self.net(x)
@@ -29,9 +30,11 @@ class DeltaLoss(th.nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, input1: Tensor, input2: Tensor, input1_base: Tensor, input2_base: Tensor, target: Tensor) -> Tensor:
-        sum1_pred = th.add(input1, input1_base)
-        sum2_pred = th.add(input2, input2_base)
+    def forward(
+        self, input1: Tensor, input2: Tensor, input1_base: Tensor, input2_base: Tensor, target: Tensor, alpha: Tensor | float = 1.0
+    ) -> Tensor:
+        sum1_pred = input1 + alpha * input1_base
+        sum2_pred = input2 + alpha * input2_base
         input_stack = th.stack((th.sum(sum1_pred, dim=[1, 2]), th.sum(sum2_pred, dim=[1, 2])))
         target_stack = th.stack((target, th.subtract(th.ones_like(target), target)))
         probs = th.log_softmax(input_stack, dim=0)
@@ -60,10 +63,12 @@ class RegularizationLoss(th.nn.Module):
         self.lambda_reg = lambda_reg
 
     def forward(self, model: th.nn.Module) -> Tensor:
+        # alpha is anchored by its own mse(alpha, alpha_init) term, not weight decay
+        parameters = [p for name, p in model.named_parameters() if name != "alpha"]
         if self.regularization_type == 'L1':
-            l1_norm = sum(p.abs().sum() for p in model.parameters())
+            l1_norm = sum(p.abs().sum() for p in parameters)
             return self.lambda_reg * l1_norm
-        l2_norm = sum(p.pow(2).sum() for p in model.parameters())
+        l2_norm = sum(p.pow(2).sum() for p in parameters)
         return self.lambda_reg * l2_norm
 
 
