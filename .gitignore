@@ -4,6 +4,7 @@ episode_images/
 tb_log/
 datasets/
 logs/
+baselines/
 __pycache__
 .pytest_cache/
 .agents/

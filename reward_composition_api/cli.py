@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -25,6 +26,8 @@ from .config import (
 from .errors import RewardCompositionError
 from .parsing import parse_int_tuple, parse_key_value_mapping
 from .partial_reward import build_builtin_registry, partials_for_display
+from .partiality import PartialityConfig, estimate_partiality, partiality_json, save_partiality_result
+from .partiality_plot import PartialityGridConfig, plot_partiality_grid
 from .registry import load_partial_reference
 
 
@@ -44,6 +47,10 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_list_partials(args)
         if args.command == "validate-partial":
             return _handle_validate_partial(args)
+        if args.command == "partiality":
+            return _handle_partiality(args)
+        if args.command == "plot-partiality-grid":
+            return _handle_plot_partiality_grid(args)
         parser.print_help()
         return 1
     except RewardCompositionError as exc:
@@ -80,6 +87,23 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--suite", choices=TRAIN_SUITES, default=MUJOCO_SUITE)
     validate_parser.add_argument("--env-id", default=None)
     validate_parser.add_argument("--partial", required=True)
+
+    partiality_parser = subparsers.add_parser("partiality", help="Estimate how much a partial reward matches true reward")
+    partiality_parser.add_argument("--suite", choices=TRAIN_SUITES, default=MUJOCO_SUITE)
+    partiality_parser.add_argument("--env-id", required=True)
+    partiality_parser.add_argument("--partial", required=True)
+    partiality_parser.add_argument("--timesteps", type=int, default=100_000)
+    partiality_parser.add_argument("--fragment-length", type=int, default=25)
+    partiality_parser.add_argument("--seed", type=int, default=0)
+    partiality_parser.add_argument("--output", default=None)
+    partiality_parser.add_argument("--no-save", action="store_true")
+
+    partiality_plot_parser = subparsers.add_parser("plot-partiality-grid", help="Plot final reward by partiality and query budget")
+    partiality_plot_parser.add_argument("--runs-root", default="logs")
+    partiality_plot_parser.add_argument("--partiality-root", default=str(Path("logs") / "partiality"))
+    partiality_plot_parser.add_argument("--output", default=str(Path("logs") / "partiality" / "partiality_grid.png"))
+    partiality_plot_parser.add_argument("--env-id", default=None)
+    partiality_plot_parser.add_argument("--title", default="Partiality vs RLHF queries")
 
     return parser
 
@@ -322,6 +346,38 @@ def _handle_validate_partial(args) -> int:
         info=info,
     )
     print(f"partial '{partial_spec.suite}/{partial_spec.name}' OK for {env_id}: partial={step.partial}")
+    return 0
+
+
+def _handle_partiality(args) -> int:
+    metrics = estimate_partiality(
+        PartialityConfig(
+            suite=args.suite,
+            env_id=args.env_id,
+            partial=args.partial,
+            timesteps=args.timesteps,
+            fragment_length=args.fragment_length,
+            seed=args.seed,
+        )
+    )
+    if not args.no_save:
+        output_path = save_partiality_result(metrics, args.output)
+        print(f"saved partiality result to {output_path}", file=sys.stderr)
+    print(partiality_json(metrics))
+    return 0
+
+
+def _handle_plot_partiality_grid(args) -> int:
+    output_path = plot_partiality_grid(
+        PartialityGridConfig(
+            runs_root=args.runs_root,
+            partiality_root=args.partiality_root,
+            output=args.output,
+            env_id=args.env_id,
+            title=args.title,
+        )
+    )
+    print(f"saved partiality grid to {output_path}")
     return 0
 
 

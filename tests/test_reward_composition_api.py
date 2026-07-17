@@ -11,6 +11,8 @@ from reward_composition_api.cli import main as cli_main
 from reward_composition_api.config import ExperimentConfig, SummaryConfig, SweepConfig, normalize_experiment_config
 from reward_composition_api.errors import ConfigError
 from reward_composition_api.parsing import parse_int_tuple, parse_key_value_mapping
+from reward_composition_api.partiality import default_partiality_output_path, estimate_partiality_from_returns
+from reward_composition_api.partiality_plot import build_grid
 from reward_composition_api.partial_reward import build_builtin_registry
 from reward_composition_api.registry import load_partial_reference
 from reward_composition_api.summaries import summarize_runs
@@ -99,10 +101,15 @@ class RewardCompositionApiTest(unittest.TestCase):
         half = load_partial_reference("hopper_half_forward", "mujoco", registry).create("Hopper-v5")
         half_step = half.step(None, None, None, 0.0, False, False, info)
 
+        true = load_partial_reference("hopper_true_reward", "mujoco", registry).create("Hopper-v5")
+        true_step = true.step(None, None, None, 2.9, False, False, info)
+
         self.assertEqual(capped_step.partial, 2.0)
         self.assertEqual(capped_step.components["ctrl_omitted"], -0.1)
         self.assertEqual(half_step.partial, 1.0)
         self.assertEqual(half_step.components["survive_omitted"], 1.0)
+        self.assertAlmostEqual(true_step.partial, 2.9)
+        self.assertEqual(true_step.components["reward_ctrl"], -0.1)
 
     def test_config_validation_rejects_bad_rounds(self):
         with self.assertRaises(ConfigError):
@@ -146,6 +153,45 @@ class RewardCompositionApiTest(unittest.TestCase):
 
         self.assertEqual([len(fragment.states) for fragment in fragments], [2, 2])
         self.assertEqual([fragment.get_summed_reward() for fragment in fragments], [1.0, 5.0])
+
+    def test_partiality_estimates_linear_reward_fraction(self):
+        metrics = estimate_partiality_from_returns(
+            true_returns=[1.0, 2.0, 3.0, 4.0],
+            partial_returns=[0.5, 1.0, 1.5, 2.0],
+        )
+
+        self.assertAlmostEqual(metrics["partiality"], 0.5)
+        self.assertAlmostEqual(metrics["partiality_clipped_0_1"], 0.5)
+        self.assertAlmostEqual(metrics["rho"], 1.0)
+        self.assertTrue(metrics["assumption_a_holds"])
+
+    def test_partiality_default_output_path_is_under_logs(self):
+        path = default_partiality_output_path(
+            {
+                "env_id": "Walker2d-v5",
+                "partial": "walker2d_example_medium",
+                "seed": 2,
+                "timesteps": 60000,
+                "fragment_length": 25,
+            }
+        )
+
+        self.assertEqual(path.parts[0], "logs")
+        self.assertIn("walker2d_v5", str(path))
+
+    def test_partiality_grid_averages_duplicate_cells(self):
+        table = build_grid(
+            [
+                {"partiality": 0.5, "queries": 350, "reward": 10.0},
+                {"partiality": 0.5, "queries": 350, "reward": 20.0},
+                {"partiality": 1.0, "queries": 0, "reward": 30.0},
+            ]
+        )
+
+        self.assertEqual(table["queries"], [350, 0])
+        self.assertEqual(table["partialities"], [0.5, 1.0])
+        self.assertEqual(table["values"][0, 0], 15.0)
+        self.assertEqual(table["counts"][0, 0], 2)
 
     def test_atari_feedback_mode_is_supported(self):
         config = normalize_experiment_config(ExperimentConfig(suite="atari", mode="feedback"))
