@@ -57,6 +57,9 @@ def estimate_partiality_from_returns(true_returns: list[float], partial_returns:
     if var_partial > 0.0:
         rho = cov / math.sqrt(var_true * var_partial)
 
+    # variance of the delta target (true - partial) the delta reward model has to learn
+    var_delta = var_true + var_partial - 2.0 * cov
+
     partiality = cov / var_true
     return {
         "partiality": float(partiality),
@@ -64,6 +67,9 @@ def estimate_partiality_from_returns(true_returns: list[float], partial_returns:
         "cov": cov,
         "var_true": var_true,
         "var_partial": var_partial,
+        "var_delta": var_delta,
+        "var_delta_over_var_true": var_delta / var_true,
+        "delta_easier_than_true": bool(var_delta < var_true),
         "rho": rho,
         "assumption_a_holds": bool(var_partial <= 2.0 * cov),
         "n_samples": int(len(true_values)),
