@@ -260,6 +260,7 @@ class RlhfTrainer:
                     partial_std=self.runtime.partial_std,
                     partial_alpha=config.partial_alpha,
                     partial_alpha_penalty=config.partial_alpha_penalty,
+                    partial_prediction_coef=config.partial_prediction_coef,
                 )
                 self.runtime.reward_model = None
                 self.runtime.reward_models = self.reward_models
@@ -278,6 +279,7 @@ class RlhfTrainer:
                     partial_std=self.runtime.partial_std,
                     partial_alpha=config.partial_alpha,
                     partial_alpha_penalty=config.partial_alpha_penalty,
+                    partial_prediction_coef=config.partial_prediction_coef,
                 )
                 self.runtime.reward_model = self.reward_model
                 self.runtime.reward_models = None
@@ -335,6 +337,7 @@ def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel
             hidden_sizes=config.reward_hidden_sizes,
             learn_alpha=config.learn_partial_alpha,
             alpha_init=config.partial_alpha,
+            predict_partial=config.partial_prediction_coef > 0,
         )
         for _ in range(config.reward_model_ensemble_size)
     ]
@@ -633,6 +636,7 @@ class ExperimentRunner:
             "partial_alpha": config.partial_alpha if is_preference else None,
             "learn_partial_alpha": config.learn_partial_alpha if is_preference else None,
             "partial_alpha_penalty": config.partial_alpha_penalty if config.learn_partial_alpha else None,
+            "partial_prediction_coef": config.partial_prediction_coef if is_preference else None,
             "partial_reference": config.partial,
             "best_logged_true_reward": best_logged_reward,
             "best_logged_timestep": best_logged_timestep,

@@ -232,6 +232,29 @@ def test_learned_alpha_stays_anchored():
     assert abs(float(model.alpha) - 1.0) < 1.0
 
 
+def test_dual_loss_trains_partial_head():
+    th.manual_seed(0)
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,), predict_partial=True)
+    pairs = make_rated_pairs(6)
+
+    train_preference_reward_model(
+        model,
+        pairs[:4],
+        pairs[4:],
+        convert_traj=convert_traj,
+        use_delta_loss=True,
+        batch_size=2,
+        epochs=2,
+        patience=5,
+        partial_prediction_coef=1.0,
+    )
+
+    x = th.zeros((1, FEATURE_DIM))
+    assert model.partial_head is not None
+    assert th.isfinite(model(x)).all()
+    assert th.isfinite(model.predict_partial(x)).all()
+
+
 def test_pairwise_loss_prefers_higher_first_input():
     loss = PairwiseLoss()
     high = th.full((1, 2, 1), 3.0)

@@ -289,6 +289,7 @@ def train_preference_reward_model(
     partial_std: float = 1.0,
     partial_alpha: float = 1.0,
     partial_alpha_penalty: float = 0.0,
+    partial_prediction_coef: float = 0.0,
 ) -> None:
     if not train_pairs:
         return
@@ -311,8 +312,10 @@ def train_preference_reward_model(
         for batch_start in range(0, len(train_pairs), batch_size):
             batch_end = min(batch_start + batch_size, len(train_pairs))
             batch_pairs = train_pairs[batch_start:batch_end]
-            y1 = reward_model(t1_tensor[batch_start:batch_end])
-            y2 = reward_model(t2_tensor[batch_start:batch_end])
+            x1 = t1_tensor[batch_start:batch_end]
+            x2 = t2_tensor[batch_start:batch_end]
+            y1 = reward_model(x1)
+            y2 = reward_model(x2)
             rating_batch = ratings[batch_start:batch_end]
 
             if use_delta_loss:
@@ -327,6 +330,12 @@ def train_preference_reward_model(
             total_loss = loss.sum() + regularization_loss.forward(reward_model)
             if use_delta_loss and reward_model.alpha is not None:
                 total_loss = total_loss + partial_alpha_penalty * (reward_model.alpha - partial_alpha) ** 2
+            if use_delta_loss and partial_prediction_coef > 0 and reward_model.partial_head is not None:
+                prediction_loss = (
+                    th.nn.functional.mse_loss(reward_model.predict_partial(x1), t1_partial)
+                    + th.nn.functional.mse_loss(reward_model.predict_partial(x2), t2_partial)
+                ) / 2
+                total_loss = total_loss + partial_prediction_coef * prediction_loss
 
             optimizer.zero_grad()
             total_loss.backward()
@@ -375,6 +384,7 @@ def train_preference_reward_ensemble(
     partial_std: float = 1.0,
     partial_alpha: float = 1.0,
     partial_alpha_penalty: float = 0.0,
+    partial_prediction_coef: float = 0.0,
 ) -> None:
     if not rated_pairs:
         return
@@ -410,6 +420,7 @@ def train_preference_reward_ensemble(
             partial_std=partial_std,
             partial_alpha=partial_alpha,
             partial_alpha_penalty=partial_alpha_penalty,
+            partial_prediction_coef=partial_prediction_coef,
         )
 
 

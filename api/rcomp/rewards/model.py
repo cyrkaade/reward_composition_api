@@ -3,7 +3,7 @@ from torch import Tensor
 
 
 class RewardModel(th.nn.Module):
-    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0):
+    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0, predict_partial=False):
         super().__init__()
         layers = []
         last_size = input_size
@@ -11,16 +11,20 @@ class RewardModel(th.nn.Module):
             layers.append(th.nn.Linear(last_size, hidden_size))
             layers.append(th.nn.LeakyReLU())
             last_size = hidden_size
-        layers.append(th.nn.Linear(last_size, 1))
-        self.net = th.nn.Sequential(*layers)
+        self.trunk = th.nn.Sequential(*layers)
+        self.head = th.nn.Linear(last_size, 1)
+        self.partial_head = th.nn.Linear(last_size, 1) if predict_partial else None
         self.alpha = th.nn.Parameter(th.tensor(float(alpha_init))) if learn_alpha else None
 
     def forward(self, x):
-        return self.net(x)
+        return self.head(self.trunk(x))
+
+    def predict_partial(self, x):
+        return self.partial_head(self.trunk(x))
 
     def dropout(self, prob):
         m = th.nn.Dropout(prob)
-        for layer in self.net:
+        for layer in self.modules():
             if isinstance(layer, th.nn.Linear):
                 layer.weight = th.nn.Parameter(m.forward(layer.weight))
         return self
