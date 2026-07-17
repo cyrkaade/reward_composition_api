@@ -55,6 +55,9 @@ class LearnedRewardRuntime:
     reward_max: float | None = None
     reward_scale: float = 1.0
     normalize: bool = False
+    normalize_partial: bool = False
+    partial_mean: float = 0.0
+    partial_std: float = 1.0
     include_partial_feature: bool = True
     reset_info: dict[str, float] = field(default_factory=dict)
     cast_true_reward: bool = True
@@ -67,6 +70,11 @@ class LearnedRewardRuntime:
             value = float(np.clip(value, self.reward_min, self.reward_max))
         return value
 
+    def transform_partial_reward(self, value: float) -> float:
+        if self.normalize_partial:
+            value = (value - self.partial_mean) / max(self.partial_std, 1e-8)
+        return value
+
     def model_features(self, observation, action, partial_reward: float) -> np.ndarray:
         return reward_model_features(
             self.observation_features,
@@ -74,7 +82,7 @@ class LearnedRewardRuntime:
             self.action_space,
             observation,
             action,
-            partial_reward,
+            self.transform_partial_reward(partial_reward),
             self.include_partial_feature,
         )
 
@@ -118,7 +126,7 @@ class PreferenceRewardWrapper(gym.Wrapper):
         if self.runtime.composition == "feedback":
             return model_reward
         if self.runtime.composition in {"naive", "delta"}:
-            return partial_reward + model_reward
+            return self.runtime.transform_partial_reward(partial_reward) + model_reward
         raise ValueError(f"Unsupported reward composition: {self.runtime.composition}")
 
     def step(self, action):

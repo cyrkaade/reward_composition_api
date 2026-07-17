@@ -55,13 +55,14 @@ def dropout_active_learning_pairs(
     k: int,
     dropout_p: float,
     n_batches: int,
+    transform_partial: Callable[[float], float] | None = None,
 ) -> list[tuple[Trajectory, Trajectory]]:
     if len(fragments) < 2:
         return []
 
     mc_dropout_models = [deepcopy(reward_model).dropout(dropout_p) for _ in range(k)]
     fragment_tensor = th.as_tensor([convert_traj(fragment) for fragment in fragments], dtype=th.float32)
-    partial_returns = [sum(state["partial_rew"] for state in fragment.states) for fragment in fragments]
+    partial_returns = _partial_fragment_returns(fragments, transform_partial)
 
     pred_returns = []
     with th.no_grad():
@@ -81,12 +82,13 @@ def ensemble_active_learning_pairs(
     convert_traj: Callable[[Trajectory], list[list[float]]],
     add_partial_to_predictions: bool,
     n_batches: int,
+    transform_partial: Callable[[float], float] | None = None,
 ) -> list[tuple[Trajectory, Trajectory]]:
     if len(fragments) < 2 or not reward_models:
         return []
 
     fragment_tensor = th.as_tensor([convert_traj(fragment) for fragment in fragments], dtype=th.float32)
-    partial_returns = [sum(state["partial_rew"] for state in fragment.states) for fragment in fragments]
+    partial_returns = _partial_fragment_returns(fragments, transform_partial)
 
     pred_returns = []
     with th.no_grad():
@@ -97,6 +99,11 @@ def ensemble_active_learning_pairs(
             pred_returns.append(returns)
 
     return _preference_variance_pairs(fragments, pred_returns, query_count, n_batches)
+
+
+def _partial_fragment_returns(fragments: list[Trajectory], transform_partial: Callable[[float], float] | None) -> list[float]:
+    transform = transform_partial or (lambda value: value)
+    return [sum(transform(state["partial_rew"]) for state in fragment.states) for fragment in fragments]
 
 
 def _preference_variance_pairs(
@@ -149,6 +156,7 @@ def choose_query_pairs(
     dropout_p: float,
     active_learning_batches: int,
     active_query_strategy: str = "auto",
+    transform_partial: Callable[[float], float] | None = None,
 ) -> list[tuple[Trajectory, Trajectory]]:
     fragments = fragment_trajectories(trajectories, fragment_length)
     if len(fragments) < 2 or query_count <= 0:
@@ -167,6 +175,7 @@ def choose_query_pairs(
             convert_traj,
             add_partial_to_predictions,
             active_learning_batches,
+            transform_partial,
         )
 
     return dropout_active_learning_pairs(
@@ -178,6 +187,7 @@ def choose_query_pairs(
         dropout_samples,
         dropout_p,
         active_learning_batches,
+        transform_partial,
     )
 
 
@@ -194,9 +204,12 @@ def rated_pairs_to_tensors(rated_pairs: list[Preference], convert_traj: Callable
     )
 
 
-def partial_reward_tensor(rated_pairs: list[Preference], side: str):
+def partial_reward_tensor(rated_pairs: list[Preference], side: str, partial_mean: float = 0.0, partial_std: float = 1.0):
     trajectories = [pair.t1 if side == "t1" else pair.t2 for pair in rated_pairs]
-    rewards = [[[state["partial_rew"]] for state in trajectory.states] for trajectory in trajectories]
+    rewards = [
+        [[(state["partial_rew"] - partial_mean) / max(partial_std, 1e-8)] for state in trajectory.states]
+        for trajectory in trajectories
+    ]
     return th.as_tensor(rewards, dtype=th.float32)
 
 
@@ -272,6 +285,8 @@ def train_preference_reward_model(
     epochs: int,
     patience: int,
     learning_rate: float = 0.01,
+    partial_mean: float = 0.0,
+    partial_std: float = 1.0,
 ) -> None:
     if not train_pairs:
         return
@@ -299,8 +314,8 @@ def train_preference_reward_model(
             rating_batch = ratings[batch_start:batch_end]
 
             if use_delta_loss:
-                t1_partial = partial_reward_tensor(batch_pairs, "t1")
-                t2_partial = partial_reward_tensor(batch_pairs, "t2")
+                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
+                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
                 loss = preference_loss(y1, y2, t1_partial, t2_partial, rating_batch)
             else:
                 loss = preference_loss(y1, y2, rating_batch)
@@ -314,7 +329,9 @@ def train_preference_reward_model(
             running_loss += float(loss.mean().item())
             batches += 1
 
-        val_loss = validate_preference_reward_model(reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss)
+        val_loss = validate_preference_reward_model(
+            reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss, partial_mean, partial_std
+        )
         print(f"reward model epoch {epoch}: train_loss={running_loss / max(batches, 1):.4f}, val_loss={val_loss:.4f}")
         if val_loss < best_val:
             best_val = val_loss
@@ -349,6 +366,8 @@ def train_preference_reward_ensemble(
     epochs: int,
     patience: int,
     learning_rate: float = 0.01,
+    partial_mean: float = 0.0,
+    partial_std: float = 1.0,
 ) -> None:
     if not rated_pairs:
         return
@@ -380,10 +399,20 @@ def train_preference_reward_ensemble(
             epochs=epochs,
             patience=patience,
             learning_rate=learning_rate,
+            partial_mean=partial_mean,
+            partial_std=partial_std,
         )
 
 
-def validate_preference_reward_model(reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss: bool) -> float:
+def validate_preference_reward_model(
+    reward_model,
+    val_pairs,
+    convert_traj,
+    preference_loss,
+    use_delta_loss: bool,
+    partial_mean: float = 0.0,
+    partial_std: float = 1.0,
+) -> float:
     if not val_pairs:
         return 0.0
     with th.no_grad():
@@ -391,7 +420,7 @@ def validate_preference_reward_model(reward_model, val_pairs, convert_traj, pref
         y1 = reward_model(t1_tensor)
         y2 = reward_model(t2_tensor)
         if use_delta_loss:
-            t1_partial = partial_reward_tensor(val_pairs, "t1")
-            t2_partial = partial_reward_tensor(val_pairs, "t2")
+            t1_partial = partial_reward_tensor(val_pairs, "t1", partial_mean, partial_std)
+            t2_partial = partial_reward_tensor(val_pairs, "t2", partial_mean, partial_std)
             return float(preference_loss(y1, y2, t1_partial, t2_partial, ratings).mean().item())
         return float(preference_loss(y1, y2, ratings).mean().item())

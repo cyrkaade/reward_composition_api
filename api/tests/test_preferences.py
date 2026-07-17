@@ -11,6 +11,7 @@ from rcomp.rewards.model import DeltaLoss, PairwiseLoss, RewardModel
 from rcomp.rewards.preferences import (
     choose_query_pairs,
     fragment_trajectories,
+    partial_reward_tensor,
     pretrain_reward_model,
     random_query_pairs,
     rate_pairs_from_true_reward,
@@ -169,6 +170,16 @@ def test_train_preference_reward_model_pairwise_and_delta():
 
         output = model(th.zeros((1, FEATURE_DIM)))
         assert th.isfinite(output).all()
+
+
+def test_partial_reward_tensor_normalization():
+    pairs = [Preference(make_trajectory(2, reward=1.0, partial=3.0), make_trajectory(2, reward=0.0, partial=1.0), 1.0)]
+
+    raw = partial_reward_tensor(pairs, "t1")
+    normalized = partial_reward_tensor(pairs, "t1", partial_mean=2.0, partial_std=2.0)
+
+    assert th.allclose(raw, th.full((1, 2, 1), 3.0))
+    assert th.allclose(normalized, th.full((1, 2, 1), 0.5))
 
 
 def test_delta_loss_prefers_matching_partials():

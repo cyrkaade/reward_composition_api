@@ -36,7 +36,7 @@ from .rewards.preferences import (
     train_preference_reward_ensemble,
     train_preference_reward_model,
 )
-from .rewards.wrapper import LearnedRewardRuntime, PreferenceRewardWrapper, reward_model_features
+from .rewards.wrapper import LearnedRewardRuntime, PreferenceRewardWrapper
 from .suites import Suite, get_suite
 
 
@@ -129,6 +129,9 @@ class RlhfTrainer:
         self.rated_val = []
         self.total_queries = 0
         self.pretraining_done = False
+        self.partial_stat_count = 0
+        self.partial_stat_mean = 0.0
+        self.partial_stat_m2 = 0.0
         self.schedule = query_schedule(config.query_budget, config.rlhf_rounds)
         self.policy_steps_by_round = policy_training_schedule(
             config.timesteps,
@@ -170,6 +173,7 @@ class RlhfTrainer:
             return
 
         trajectories = self.collect_trajectories(round_index, collection_steps)
+        self.update_partial_stats(trajectories)
         self.maybe_pretrain_reward_model(trajectories)
         self.add_query_pairs(trajectories, round_query_budget)
         self.maybe_train_reward_model()
@@ -179,6 +183,23 @@ class RlhfTrainer:
 
     def _needs_pretraining(self) -> bool:
         return bool(self.config.pretrain_reward_model and not self.pretraining_done)
+
+    def update_partial_stats(self, trajectories: list[Trajectory]) -> None:
+        """Welford running mean/std over every partial-reward step seen so far,
+        shared by the model input feature, the delta loss, and the composed reward."""
+        if not self.runtime.normalize_partial:
+            return
+        for trajectory in trajectories:
+            for state in trajectory.states:
+                value = float(state["partial_rew"])
+                self.partial_stat_count += 1
+                delta = value - self.partial_stat_mean
+                self.partial_stat_mean += delta / self.partial_stat_count
+                self.partial_stat_m2 += delta * (value - self.partial_stat_mean)
+        if self.partial_stat_count >= 2:
+            self.runtime.partial_mean = self.partial_stat_mean
+            self.runtime.partial_std = max((self.partial_stat_m2 / self.partial_stat_count) ** 0.5, 1e-8)
+            print(f"partial reward stats: mean={self.runtime.partial_mean:.4f}, std={self.runtime.partial_std:.4f}")
 
     def maybe_pretrain_reward_model(self, trajectories: list[Trajectory]) -> None:
         config = self.config
@@ -213,6 +234,7 @@ class RlhfTrainer:
             dropout_p=config.dropout_p,
             active_learning_batches=config.active_learning_batches,
             active_query_strategy=config.active_query_strategy,
+            transform_partial=self.runtime.transform_partial_reward,
         )
         rated_pairs = rate_pairs_from_true_reward(pairs)
         split = int(len(rated_pairs) * 0.8)
@@ -234,6 +256,8 @@ class RlhfTrainer:
                     epochs=config.reward_model_epochs,
                     patience=config.reward_model_patience,
                     learning_rate=config.reward_model_lr,
+                    partial_mean=self.runtime.partial_mean,
+                    partial_std=self.runtime.partial_std,
                 )
                 self.runtime.reward_model = None
                 self.runtime.reward_models = self.reward_models
@@ -248,6 +272,8 @@ class RlhfTrainer:
                     epochs=config.reward_model_epochs,
                     patience=config.reward_model_patience,
                     learning_rate=config.reward_model_lr,
+                    partial_mean=self.runtime.partial_mean,
+                    partial_std=self.runtime.partial_std,
                 )
                 self.runtime.reward_model = self.reward_model
                 self.runtime.reward_models = None
@@ -419,6 +445,7 @@ class ExperimentRunner:
             reward_max=config.model_reward_max,
             reward_scale=config.model_reward_scale,
             normalize=config.normalize_model_reward,
+            normalize_partial=config.normalize_partial_reward,
             include_partial_feature=include_partial_feature(config),
         )
         train_env, eval_env, callbacks = self.build_envs_and_callbacks(
@@ -430,7 +457,7 @@ class ExperimentRunner:
 
         input_size = flatdim(observation_space) + flatdim(action_space) + 1
         reward_model = make_reward_models(input_size, config)
-        convert_traj = self.trajectory_converter(observation_space, action_space, runtime.include_partial_feature)
+        convert_traj = self.trajectory_converter(runtime)
         total_queries = RlhfTrainer(
             config,
             model,
@@ -447,18 +474,10 @@ class ExperimentRunner:
 
         return self.save_and_report(model, train_env, eval_env, run_dir, synthetic_queries=total_queries, runtime=runtime)
 
-    def trajectory_converter(self, observation_space, action_space, include_partial: bool):
+    def trajectory_converter(self, runtime: LearnedRewardRuntime):
         def convert(trajectory: Trajectory):
             return [
-                reward_model_features(
-                    self.suite.observation_features,
-                    observation_space,
-                    action_space,
-                    state["obs"],
-                    state["act"],
-                    state["partial_rew"],
-                    include_partial,
-                ).tolist()
+                runtime.model_features(state["obs"], state["act"], state["partial_rew"]).tolist()
                 for state in trajectory.states
             ]
 
@@ -596,6 +615,7 @@ class ExperimentRunner:
             "pretrain_reward_model": config.pretrain_reward_model if is_preference else None,
             "pretrain_target": config.pretrain_target if config.pretrain_reward_model else None,
             "include_partial_feature": include_partial_feature(config) if is_preference else None,
+            "normalize_partial_reward": config.normalize_partial_reward if is_preference else None,
             "partial_reference": config.partial,
             "best_logged_true_reward": best_logged_reward,
             "best_logged_timestep": best_logged_timestep,
@@ -613,6 +633,8 @@ class ExperimentRunner:
             "model_reward_output_std": runtime.output_std,
             "model_reward_target_mean": runtime.target_mean,
             "model_reward_target_std": runtime.target_std,
+            "partial_reward_mean": runtime.partial_mean,
+            "partial_reward_std": runtime.partial_std,
             "reward_composition": runtime.composition,
         }
 

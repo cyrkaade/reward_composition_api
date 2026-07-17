@@ -89,6 +89,7 @@ class ExperimentConfig:
     model_reward_target_mean: float = _f(0.0, "Target mean for normalized model rewards")
     model_reward_target_std: float = _f(1.0, "Target std for normalized model rewards")
     include_partial_feature: bool | None = _f(None, "Feed the partial reward to the reward model (defaults to naive/delta modes)")
+    normalize_partial_reward: bool = _f(False, "Normalize the partial reward with running stats in the model input, delta loss, and composed reward")
 
     pretrain_reward_model: bool = _f(False, "Pretrain the reward model before preference training")
     pretrain_target: str = _f("partial", "Pretraining regression target", choices=PRETRAIN_TARGETS)
@@ -223,6 +224,8 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError(f"Unsupported mode '{config.mode}'. Supported modes: {', '.join(TRAIN_MODES)}")
     if config.mode in PARTIAL_REQUIRED_MODES and not config.partial:
         raise ConfigError(f"Mode '{config.mode}' requires --partial with a manually written partial reward.")
+    if config.normalize_partial_reward and config.mode not in ("naive", "delta"):
+        raise ConfigError("normalize_partial_reward requires mode 'naive' or 'delta'")
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
     if config.initial_timesteps < 0:
         raise ConfigError("initial_timesteps must be non-negative")
