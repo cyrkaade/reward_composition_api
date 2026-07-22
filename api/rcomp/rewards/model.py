@@ -2,8 +2,34 @@ import torch as th
 from torch import Tensor
 
 
+class OutputBatchNorm(th.nn.Module):
+    """Mini-batch normalization of a scalar model output: batch statistics
+    during training (gradients flow through them), running statistics at eval
+    time or when the batch is too small to estimate a std."""
+
+    def __init__(self, momentum: float = 0.1, eps: float = 1e-5):
+        super().__init__()
+        self.momentum = momentum
+        self.eps = eps
+        self.register_buffer("running_mean", th.zeros(1))
+        self.register_buffer("running_var", th.ones(1))
+
+    def forward(self, x: Tensor) -> Tensor:
+        flat = x.reshape(-1, 1)
+        if self.training and flat.shape[0] > 1:
+            mean = flat.mean(0)
+            var = flat.var(0, unbiased=False)
+            with th.no_grad():
+                self.running_mean.mul_(1 - self.momentum).add_(self.momentum * mean.detach())
+                self.running_var.mul_(1 - self.momentum).add_(self.momentum * var.detach())
+        else:
+            mean = self.running_mean
+            var = self.running_var
+        return (x - mean) / th.sqrt(var + self.eps)
+
+
 class RewardModel(th.nn.Module):
-    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0, predict_partial=False):
+    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0, predict_partial=False, batchnorm_output=False):
         super().__init__()
         layers = []
         last_size = input_size
@@ -14,10 +40,14 @@ class RewardModel(th.nn.Module):
         self.trunk = th.nn.Sequential(*layers)
         self.head = th.nn.Linear(last_size, 1)
         self.partial_head = th.nn.Linear(last_size, 1) if predict_partial else None
+        self.output_bn = OutputBatchNorm() if batchnorm_output else None
         self.alpha = th.nn.Parameter(th.tensor(float(alpha_init))) if learn_alpha else None
 
     def forward(self, x):
-        return self.head(self.trunk(x))
+        out = self.head(self.trunk(x))
+        if self.output_bn is not None:
+            out = self.output_bn(out)
+        return out
 
     def predict_partial(self, x):
         return self.partial_head(self.trunk(x))

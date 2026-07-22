@@ -255,6 +255,26 @@ def test_dual_loss_trains_partial_head():
     assert th.isfinite(model.predict_partial(x)).all()
 
 
+def test_batchnorm_output_off_by_default_and_optional():
+    # off by default: no batch-norm layer, forward unchanged
+    plain = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,))
+    assert plain.output_bn is None
+
+    th.manual_seed(0)
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,), batchnorm_output=True)
+    pairs = make_rated_pairs(6)
+    train_preference_reward_model(
+        model, pairs[:4], pairs[4:], convert_traj=convert_traj,
+        use_delta_loss=True, batch_size=2, epochs=3, patience=5,
+    )
+    model.eval()
+    # single-sample inference must work (running stats, not batch stats)
+    out = model(th.zeros((1, FEATURE_DIM)))
+    assert th.isfinite(out).all()
+    # running stats moved away from their init during training
+    assert not th.allclose(model.output_bn.running_var, th.ones(1))
+
+
 def test_pairwise_loss_prefers_higher_first_input():
     loss = PairwiseLoss()
     high = th.full((1, 2, 1), 3.0)

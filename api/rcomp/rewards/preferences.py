@@ -304,6 +304,9 @@ def train_preference_reward_model(
     no_improvement = 0
 
     for epoch in range(epochs):
+        # train()/eval() only affect the optional output batch-norm; they are
+        # no-ops for the default model, which has no train/eval-sensitive layers.
+        reward_model.train()
         random.shuffle(train_pairs)
         t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(train_pairs, convert_traj)
         running_loss = 0.0
@@ -343,6 +346,7 @@ def train_preference_reward_model(
             running_loss += float(loss.mean().item())
             batches += 1
 
+        reward_model.eval()
         val_loss = validate_preference_reward_model(
             reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss, partial_mean, partial_std, partial_alpha
         )

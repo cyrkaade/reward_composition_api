@@ -94,6 +94,7 @@ class ExperimentConfig:
     learn_partial_alpha: bool = _f(False, "Learn alpha as a reward-model parameter, anchored to partial_alpha by an MSE term")
     partial_alpha_penalty: float = _f(1.0, "Weight of the mse(alpha, partial_alpha) anchor when alpha is learned")
     partial_prediction_coef: float = _f(0.0, "Weight of the auxiliary MSE loss for predicting the (normalized) partial reward; 0 disables the extra head")
+    batchnorm_model_reward: bool = _f(False, "Mini-batch normalize the model output (delta) inside the loss and at inference (batch stats in training, running stats at eval)")
 
     pretrain_reward_model: bool = _f(False, "Pretrain the reward model before preference training")
     pretrain_target: str = _f("partial", "Pretraining regression target", choices=PRETRAIN_TARGETS)
@@ -240,6 +241,8 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("partial_prediction_coef must be non-negative")
     if config.partial_prediction_coef > 0 and config.mode != "delta":
         raise ConfigError("partial_prediction_coef requires mode 'delta'")
+    if config.batchnorm_model_reward and config.mode not in PREFERENCE_MODES:
+        raise ConfigError("batchnorm_model_reward requires a preference mode (feedback/naive/delta)")
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
     if config.initial_timesteps < 0:
         raise ConfigError("initial_timesteps must be non-negative")

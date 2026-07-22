@@ -338,9 +338,14 @@ def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel
             learn_alpha=config.learn_partial_alpha,
             alpha_init=config.partial_alpha,
             predict_partial=config.partial_prediction_coef > 0,
+            batchnorm_output=config.batchnorm_model_reward,
         )
         for _ in range(config.reward_model_ensemble_size)
     ]
+    # Start in eval mode so single-step inference uses running stats before the
+    # first reward-model training round (no-op when batchnorm is disabled).
+    for model in models:
+        model.eval()
     return models[0] if len(models) == 1 else models
 
 
@@ -637,6 +642,7 @@ class ExperimentRunner:
             "learn_partial_alpha": config.learn_partial_alpha if is_preference else None,
             "partial_alpha_penalty": config.partial_alpha_penalty if config.learn_partial_alpha else None,
             "partial_prediction_coef": config.partial_prediction_coef if is_preference else None,
+            "batchnorm_model_reward": config.batchnorm_model_reward if is_preference else None,
             "partial_reference": config.partial,
             "best_logged_true_reward": best_logged_reward,
             "best_logged_timestep": best_logged_timestep,
