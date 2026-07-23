@@ -32,6 +32,8 @@ class PartialityConfig:
     timesteps: int = 100_000
     fragment_length: int = 25
     seed: int = 0
+    policy: str = "random"  # random | trained | mix
+    policy_timesteps: int = 300_000
 
 
 def estimate_partiality_from_returns(true_returns: list[float], partial_returns: list[float]) -> dict[str, Any]:
@@ -81,12 +83,7 @@ def estimate_partiality_from_returns(true_returns: list[float], partial_returns:
 def estimate_partiality(config: PartialityConfig) -> dict[str, Any]:
     _validate_config(config)
     partial_spec = load_partial_reference(config.partial, config.suite, PartialRegistry())
-    trajectories = collect_random_trajectories(
-        env_id=config.env_id,
-        partial_spec=partial_spec,
-        total_timesteps=config.timesteps,
-        seed=config.seed,
-    )
+    trajectories = collect_partiality_trajectories(config, partial_spec)
     samples = fragment_trajectories(trajectories, config.fragment_length)
     if not samples:
         samples = trajectories
@@ -100,9 +97,39 @@ def estimate_partiality(config: PartialityConfig) -> dict[str, Any]:
         "timesteps": config.timesteps,
         "fragment_length": config.fragment_length,
         "seed": config.seed,
+        "policy": config.policy,
         "n_trajectories": len(trajectories),
         **metrics,
     }
+
+
+def collect_partiality_trajectories(config: PartialityConfig, partial_spec: PartialSpec) -> list[Trajectory]:
+    """Collect rollouts for the partiality estimate. ``policy='random'`` keeps
+    the original behaviour; ``'trained'`` uses a PPO policy trained on the true
+    reward; ``'mix'`` combines random and trained rollouts (the representative
+    default), so partiality reflects the states that actually matter."""
+    if config.policy == "random":
+        return collect_random_trajectories(config.env_id, partial_spec, config.timesteps, config.seed)
+
+    model = train_true_reward_policy(config.env_id, config.policy_timesteps, config.seed)
+    if config.policy == "trained":
+        return collect_random_trajectories(config.env_id, partial_spec, config.timesteps, config.seed, policy=model)
+    if config.policy == "mix":
+        half = max(config.timesteps // 2, 1)
+        random_part = collect_random_trajectories(config.env_id, partial_spec, half, config.seed)
+        trained_part = collect_random_trajectories(config.env_id, partial_spec, half, config.seed + 1, policy=model)
+        return random_part + trained_part
+    raise ConfigError(f"Unknown partiality policy '{config.policy}'. Use random, trained, or mix.")
+
+
+def train_true_reward_policy(env_id: str, timesteps: int, seed: int):
+    """Train a PPO policy on the environment's true reward, used to collect
+    partiality-measurement rollouts from a representative (non-random) policy."""
+    from stable_baselines3 import PPO
+
+    model = PPO("MlpPolicy", gym.make(env_id), verbose=0, seed=seed)
+    model.learn(int(timesteps))
+    return model
 
 
 def collect_random_trajectories(
@@ -110,6 +137,7 @@ def collect_random_trajectories(
     partial_spec: PartialSpec,
     total_timesteps: int,
     seed: int,
+    policy=None,
 ) -> list[Trajectory]:
     env = gym.make(env_id)
     partial = partial_spec.create(env_id)
@@ -122,7 +150,7 @@ def collect_random_trajectories(
         obs, info = env.reset(seed=seed)
         partial.reset(info)
         while steps < total_timesteps:
-            action = env.action_space.sample()
+            action = env.action_space.sample() if policy is None else policy.predict(obs, deterministic=False)[0]
             next_obs, true_reward, terminated, truncated, info = env.step(action)
             done = bool(terminated or truncated)
             partial_step = partial.step(obs, action, next_obs, float(true_reward), terminated, truncated, info)

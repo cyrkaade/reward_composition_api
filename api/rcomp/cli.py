@@ -87,6 +87,10 @@ def build_parser() -> argparse.ArgumentParser:
     partiality_parser.add_argument("--timesteps", type=int, default=100_000)
     partiality_parser.add_argument("--fragment-length", type=int, default=25)
     partiality_parser.add_argument("--seed", type=int, default=0)
+    partiality_parser.add_argument("--policy", choices=["random", "trained", "mix"], default="random",
+                                   help="Rollout policy for the estimate: random (default), trained (PPO on true reward), or mix")
+    partiality_parser.add_argument("--policy-timesteps", type=int, default=300_000,
+                                   help="PPO timesteps when --policy is trained/mix")
     partiality_parser.add_argument("--output", default=None)
     partiality_parser.add_argument("--no-save", action="store_true")
 
@@ -235,6 +239,8 @@ def _handle_partiality(args) -> int:
             timesteps=args.timesteps,
             fragment_length=args.fragment_length,
             seed=args.seed,
+            policy=args.policy,
+            policy_timesteps=args.policy_timesteps,
         )
     )
     if not args.no_save:
