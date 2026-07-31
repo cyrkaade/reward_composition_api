@@ -30,6 +30,7 @@ from .partials import include_partial_feature, resolve_custom_partial
 from .rewards.model import RewardModel
 from .rewards.preferences import (
     choose_query_pairs,
+    gate_statistics,
     pretrain_reward_model,
     rate_pairs_from_true_reward,
     reward_model_io_stats,
@@ -287,6 +288,15 @@ class RlhfTrainer:
                 alphas = [float(model.alpha.item()) for model in self.reward_models if model.alpha is not None]
                 self.runtime.partial_alpha = sum(alphas) / len(alphas)
                 print(f"learned partial alpha: {self.runtime.partial_alpha:.4f}")
+            if config.gate_partial:
+                gate_trajectories = [pair.t1 for pair in self.rated_train + self.rated_val] + [
+                    pair.t2 for pair in self.rated_train + self.rated_val
+                ]
+                self.runtime.gate_stats = gate_statistics(self.reward_models, gate_trajectories, self.convert_traj)
+                if self.runtime.gate_stats:
+                    s = self.runtime.gate_stats
+                    print(f"learned gate g: mean={s['mean']:.3f} p10={s['p10']:.3f} p50={s['p50']:.3f} p90={s['p90']:.3f} "
+                          f"(frac<0.1={s['frac_below_0.1']:.2f}, frac>0.9={s['frac_above_0.9']:.2f})")
             stat_trajectories = [pair.t1 for pair in self.rated_train + self.rated_val] + [
                 pair.t2 for pair in self.rated_train + self.rated_val
             ]
@@ -339,6 +349,7 @@ def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel
             alpha_init=config.partial_alpha,
             predict_partial=config.partial_prediction_coef > 0,
             batchnorm_output=config.batchnorm_model_reward,
+            gate_partial=config.gate_partial,
         )
         for _ in range(config.reward_model_ensemble_size)
     ]
@@ -468,6 +479,7 @@ class ExperimentRunner:
             normalize=config.normalize_model_reward,
             normalize_partial=config.normalize_partial_reward,
             partial_alpha=config.partial_alpha,
+            gate_partial=config.gate_partial,
             include_partial_feature=include_partial_feature(config),
         )
         train_env, eval_env, callbacks = self.build_envs_and_callbacks(
@@ -663,6 +675,8 @@ class ExperimentRunner:
             "partial_reward_mean": runtime.partial_mean,
             "partial_reward_std": runtime.partial_std,
             "final_partial_alpha": runtime.partial_alpha,
+            "gate_partial": runtime.gate_partial,
+            "gate_stats": runtime.gate_stats,
             "reward_composition": runtime.composition,
         }
 

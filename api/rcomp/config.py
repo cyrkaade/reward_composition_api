@@ -95,6 +95,7 @@ class ExperimentConfig:
     partial_alpha_penalty: float = _f(1.0, "Weight of the mse(alpha, partial_alpha) anchor when alpha is learned")
     partial_prediction_coef: float = _f(0.0, "Weight of the auxiliary MSE loss for predicting the (normalized) partial reward; 0 disables the extra head")
     batchnorm_model_reward: bool = _f(False, "Mini-batch normalize the model output (delta) inside the loss and at inference (batch stats in training, running stats at eval)")
+    gate_partial: bool = _f(False, "Learn a per-state gate g(s,a) in [0,1] so the composed reward is g*partial + delta (the model decides how much to trust the partial per state)")
 
     pretrain_reward_model: bool = _f(False, "Pretrain the reward model before preference training")
     pretrain_target: str = _f("partial", "Pretraining regression target", choices=PRETRAIN_TARGETS)
@@ -243,6 +244,10 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("partial_prediction_coef requires mode 'delta'")
     if config.batchnorm_model_reward and config.mode not in PREFERENCE_MODES:
         raise ConfigError("batchnorm_model_reward requires a preference mode (feedback/naive/delta)")
+    if config.gate_partial and config.mode != "delta":
+        raise ConfigError("gate_partial requires mode 'delta'")
+    if config.gate_partial and config.learn_partial_alpha:
+        raise ConfigError("gate_partial and learn_partial_alpha are mutually exclusive")
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
     if config.initial_timesteps < 0:
         raise ConfigError("initial_timesteps must be non-negative")

@@ -29,7 +29,7 @@ class OutputBatchNorm(th.nn.Module):
 
 
 class RewardModel(th.nn.Module):
-    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0, predict_partial=False, batchnorm_output=False):
+    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0, predict_partial=False, batchnorm_output=False, gate_partial=False):
         super().__init__()
         layers = []
         last_size = input_size
@@ -40,6 +40,7 @@ class RewardModel(th.nn.Module):
         self.trunk = th.nn.Sequential(*layers)
         self.head = th.nn.Linear(last_size, 1)
         self.partial_head = th.nn.Linear(last_size, 1) if predict_partial else None
+        self.gate_head = th.nn.Linear(last_size, 1) if gate_partial else None
         self.output_bn = OutputBatchNorm() if batchnorm_output else None
         self.alpha = th.nn.Parameter(th.tensor(float(alpha_init))) if learn_alpha else None
 
@@ -51,6 +52,10 @@ class RewardModel(th.nn.Module):
 
     def predict_partial(self, x):
         return self.partial_head(self.trunk(x))
+
+    def gate(self, x):
+        """Per-state gate g(s,a) in [0,1]: how much to trust the partial reward."""
+        return th.sigmoid(self.gate_head(self.trunk(x)))
 
     def dropout(self, prob):
         m = th.nn.Dropout(prob)

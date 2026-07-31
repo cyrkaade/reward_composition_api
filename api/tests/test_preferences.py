@@ -275,6 +275,25 @@ def test_batchnorm_output_off_by_default_and_optional():
     assert not th.allclose(model.output_bn.running_var, th.ones(1))
 
 
+def test_per_state_gate_trains_and_stays_in_unit_interval():
+    plain = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,))
+    assert plain.gate_head is None
+
+    th.manual_seed(0)
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,), gate_partial=True)
+    pairs = make_rated_pairs(6)
+    train_preference_reward_model(
+        model, pairs[:4], pairs[4:], convert_traj=convert_traj,
+        use_delta_loss=True, batch_size=2, epochs=3, patience=5,
+    )
+    g = model.gate(th.zeros((5, FEATURE_DIM)))
+    assert th.all(g >= 0) and th.all(g <= 1)  # sigmoid gate stays in [0,1]
+
+    from rcomp.rewards.preferences import gate_statistics
+    stats = gate_statistics(model, [make_trajectory(3, reward=1.0, partial=0.5)], convert_traj)
+    assert 0.0 <= stats["mean"] <= 1.0
+
+
 def test_pairwise_loss_prefers_higher_first_input():
     loss = PairwiseLoss()
     high = th.full((1, 2, 1), 3.0)

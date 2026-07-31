@@ -49,6 +49,7 @@ class LearnedRewardRuntime:
     reward_models: list[RewardModel] | None = None
     output_mean: float | None = None
     output_std: float | None = None
+    gate_stats: dict | None = None
     target_mean: float = 0.0
     target_std: float = 1.0
     reward_min: float | None = None
@@ -59,6 +60,7 @@ class LearnedRewardRuntime:
     partial_mean: float = 0.0
     partial_std: float = 1.0
     partial_alpha: float = 1.0
+    gate_partial: bool = False
     include_partial_feature: bool = True
     reset_info: dict[str, float] = field(default_factory=dict)
     cast_true_reward: bool = True
@@ -124,6 +126,18 @@ class PreferenceRewardWrapper(gym.Wrapper):
             output = th.mean(outputs)
         return self.runtime.transform_model_output(float(output.item()))
 
+    def model_output_and_gate(self, observation, action, partial_reward: float) -> tuple[float, float]:
+        """Delta output h and per-state gate g(s,a) in [0,1], averaged over the ensemble."""
+        reward_models = self.runtime.reward_models or ([self.runtime.reward_model] if self.runtime.reward_model is not None else [])
+        if not reward_models:
+            return 0.0, 1.0
+        model_input = self.runtime.model_features(observation, action, partial_reward)
+        with th.no_grad():
+            model_tensor = th.as_tensor(model_input, dtype=th.float32).view(1, -1)
+            h = th.mean(th.stack([model(model_tensor).reshape(-1)[0] for model in reward_models]))
+            g = th.mean(th.stack([model.gate(model_tensor).reshape(-1)[0] for model in reward_models]))
+        return self.runtime.transform_model_output(float(h.item())), float(g.item())
+
     def compose_reward(self, partial_reward: float, model_reward: float) -> float:
         if self.runtime.composition == "partial":
             return partial_reward
@@ -145,8 +159,13 @@ class PreferenceRewardWrapper(gym.Wrapper):
             truncated,
             info,
         )
-        model_reward = self.model_reward(observation, action, partial_reward)
-        training_reward = self.compose_reward(partial_reward, model_reward)
+        if self.runtime.gate_partial and self.runtime.composition == "delta":
+            model_reward, gate = self.model_output_and_gate(observation, action, partial_reward)
+            training_reward = gate * self.runtime.transform_partial_reward(partial_reward) + model_reward
+            info["gate"] = gate
+        else:
+            model_reward = self.model_reward(observation, action, partial_reward)
+            training_reward = self.compose_reward(partial_reward, model_reward)
 
         info["true_reward"] = float(true_reward) if self.runtime.cast_true_reward else true_reward
         info["partial_reward"] = partial_reward

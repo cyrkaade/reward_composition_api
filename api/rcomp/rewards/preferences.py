@@ -227,6 +227,25 @@ def reward_model_io_stats(
     return float(outputs.mean().item()), float(outputs.std(unbiased=False).item())
 
 
+def gate_statistics(reward_model, trajectories, convert_traj):
+    """Distribution of the learned per-state gate g(s,a) over the given states."""
+    reward_models = reward_model if isinstance(reward_model, list) else [reward_model]
+    if not trajectories or reward_models[0].gate_head is None:
+        return None
+    with th.no_grad():
+        tensors = th.as_tensor([convert_traj(trajectory) for trajectory in trajectories], dtype=th.float32)
+        gates = th.stack([model.gate(tensors).reshape(-1) for model in reward_models]).mean(dim=0).cpu().numpy()
+    return {
+        "mean": float(gates.mean()),
+        "std": float(gates.std()),
+        "p10": float(np.percentile(gates, 10)),
+        "p50": float(np.percentile(gates, 50)),
+        "p90": float(np.percentile(gates, 90)),
+        "frac_below_0.1": float((gates < 0.1).mean()),
+        "frac_above_0.9": float((gates > 0.9).mean()),
+    }
+
+
 def pretrain_reward_model(
     reward_model: RewardModel,
     trajectories: list[Trajectory],
@@ -296,6 +315,7 @@ def train_preference_reward_model(
 
     optimizer = Adam(reward_model.parameters(), lr=learning_rate)
     preference_loss = DeltaLoss() if use_delta_loss else PairwiseLoss()
+    gate_loss = PairwiseLoss()  # Bradley-Terry on the gated composed reward h + g*partial
     regularization_loss = RegularizationLoss(regularization_type="L1", lambda_reg=0.01)
     output_regularization_loss = OutputRegularizationLoss(regularization_type="L1", lambda_reg=0.001)
     best_state = deepcopy(reward_model.state_dict())
@@ -321,7 +341,14 @@ def train_preference_reward_model(
             y2 = reward_model(x2)
             rating_batch = ratings[batch_start:batch_end]
 
-            if use_delta_loss:
+            if use_delta_loss and reward_model.gate_head is not None:
+                # per-state gate: R_hat = h(s,a) + g(s,a) * partial(s,a), g in [0,1]
+                g1 = reward_model.gate(x1)
+                g2 = reward_model.gate(x2)
+                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
+                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+                loss = gate_loss(y1 + g1 * t1_partial, y2 + g2 * t2_partial, rating_batch)
+            elif use_delta_loss:
                 alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
                 t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
                 t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
@@ -444,6 +471,12 @@ def validate_preference_reward_model(
         t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(val_pairs, convert_traj)
         y1 = reward_model(t1_tensor)
         y2 = reward_model(t2_tensor)
+        if use_delta_loss and reward_model.gate_head is not None:
+            g1 = reward_model.gate(t1_tensor)
+            g2 = reward_model.gate(t2_tensor)
+            t1_partial = partial_reward_tensor(val_pairs, "t1", partial_mean, partial_std)
+            t2_partial = partial_reward_tensor(val_pairs, "t2", partial_mean, partial_std)
+            return float(PairwiseLoss()(y1 + g1 * t1_partial, y2 + g2 * t2_partial, ratings).mean().item())
         if use_delta_loss:
             alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
             t1_partial = partial_reward_tensor(val_pairs, "t1", partial_mean, partial_std)
