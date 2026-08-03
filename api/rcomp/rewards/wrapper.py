@@ -159,7 +159,7 @@ class PreferenceRewardWrapper(gym.Wrapper):
             truncated,
             info,
         )
-        if self.runtime.gate_partial and self.runtime.composition == "delta":
+        if self.runtime.gate_partial and self.runtime.composition in {"delta", "naive"}:
             model_reward, gate = self.model_output_and_gate(observation, action, partial_reward)
             training_reward = gate * self.runtime.transform_partial_reward(partial_reward) + model_reward
             info["gate"] = gate

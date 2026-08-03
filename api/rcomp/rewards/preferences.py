@@ -390,6 +390,46 @@ def train_preference_reward_model(
                 reward_model.load_state_dict(best_state)
                 break
 
+    # naive + gate: phase 2 — freeze the trained reward, learn only the per-state gate
+    if not use_delta_loss and reward_model.gate_head is not None:
+        train_gate_head(reward_model, train_pairs, convert_traj, epochs, batch_size, learning_rate, partial_mean, partial_std)
+
+
+def train_gate_head(reward_model, train_pairs, convert_traj, epochs, batch_size, learning_rate, partial_mean, partial_std):
+    """Phase 2 of the naive frozen-trunk gate: freeze the whole reward model and
+    train ONLY the gate head, minimizing the preference loss on the composed
+    reward r_pred + g(s,a)*partial. The trunk is frozen, so the gate reads the
+    already-learned features and cannot disturb r_pred."""
+    for parameter in reward_model.parameters():
+        parameter.requires_grad_(False)
+    for parameter in reward_model.gate_head.parameters():
+        parameter.requires_grad_(True)
+    optimizer = Adam(reward_model.gate_head.parameters(), lr=learning_rate)
+    loss_fn = PairwiseLoss()
+    reward_model.eval()  # freeze any batch-norm running stats
+    for epoch in range(epochs):
+        random.shuffle(train_pairs)
+        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(train_pairs, convert_traj)
+        running_loss, batches = 0.0, 0
+        for batch_start in range(0, len(train_pairs), batch_size):
+            batch_end = min(batch_start + batch_size, len(train_pairs))
+            batch_pairs = train_pairs[batch_start:batch_end]
+            x1, x2 = t1_tensor[batch_start:batch_end], t2_tensor[batch_start:batch_end]
+            with th.no_grad():
+                h1, h2 = reward_model(x1), reward_model(x2)  # frozen r_pred
+            g1, g2 = reward_model.gate(x1), reward_model.gate(x2)  # grads only into gate_head
+            t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
+            t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+            loss = loss_fn(h1 + g1 * t1_partial, h2 + g2 * t2_partial, ratings[batch_start:batch_end])
+            optimizer.zero_grad()
+            loss.sum().backward()
+            optimizer.step()
+            running_loss += float(loss.mean().item())
+            batches += 1
+        print(f"gate epoch {epoch}: loss2={running_loss / max(batches, 1):.4f}")
+    for parameter in reward_model.parameters():
+        parameter.requires_grad_(True)
+
 
 def split_preference_k_folds(rated_pairs: list[Preference], k: int) -> list[list[Preference]]:
     if k <= 0:

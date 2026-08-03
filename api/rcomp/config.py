@@ -244,8 +244,8 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("partial_prediction_coef requires mode 'delta'")
     if config.batchnorm_model_reward and config.mode not in PREFERENCE_MODES:
         raise ConfigError("batchnorm_model_reward requires a preference mode (feedback/naive/delta)")
-    if config.gate_partial and config.mode != "delta":
-        raise ConfigError("gate_partial requires mode 'delta'")
+    if config.gate_partial and config.mode not in ("delta", "naive"):
+        raise ConfigError("gate_partial requires mode 'delta' (joint) or 'naive' (frozen-trunk gate)")
     if config.gate_partial and config.learn_partial_alpha:
         raise ConfigError("gate_partial and learn_partial_alpha are mutually exclusive")
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
