@@ -1,0 +1,5 @@
+# Slurm reads these on Linux. A CRLF line ending would leave a stray \r on the
+# last field parsed by `read`, so seeds would become "0\r" and run names would
+# be corrupted - a failure that is very hard to spot on the cluster.
+*.sh text eol=lf
+api/jobs/params_*.txt text eol=lf
