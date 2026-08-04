@@ -246,6 +246,87 @@ def gate_statistics(reward_model, trajectories, convert_traj):
     }
 
 
+def _rankdata(x: np.ndarray) -> np.ndarray:
+    """Ranks with ties averaged. Ties matter here: a gate that has collapsed to a
+    constant is all ties, and naive argsort ranking would invent an ordering and
+    report a spurious correlation for exactly the case we are trying to detect."""
+    order = np.argsort(x, kind="mergesort")
+    ranks = np.empty(len(x), dtype=np.float64)
+    ranks[order] = np.arange(len(x), dtype=np.float64)
+    sorted_x = x[order]
+    start = 0
+    while start < len(x):
+        stop = start
+        while stop + 1 < len(x) and sorted_x[stop + 1] == sorted_x[start]:
+            stop += 1
+        if stop > start:
+            ranks[order[start : stop + 1]] = (start + stop) / 2.0
+        start = stop + 1
+    return ranks
+
+
+def _spearman(a: np.ndarray, b: np.ndarray) -> float:
+    """Rank correlation without a scipy dependency. Returns NaN when either side
+    is constant (no variance => the correlation is undefined, not zero)."""
+    if len(a) < 3:
+        return float("nan")
+    ra = _rankdata(np.asarray(a, dtype=np.float64))
+    rb = _rankdata(np.asarray(b, dtype=np.float64))
+    ra -= ra.mean()
+    rb -= rb.mean()
+    denom = float(np.sqrt((ra**2).sum() * (rb**2).sum()))
+    return float((ra * rb).sum() / denom) if denom > 0 else float("nan")
+
+
+def gate_partial_error_stats(reward_model, trajectories, convert_traj):
+    """Does the gate actually distrust the partial where the partial is wrong?
+
+    For every state we have the learned gate g(s,a), the hand-written partial,
+    and the true reward. Partial and true reward live on different scales, so we
+    standardize both and call |z(partial) - z(true)| the partial's error.
+
+    Returns the rank correlation between g and that error. A per-state gate that
+    is doing what it is meant to do gives a NEGATIVE correlation: the gate closes
+    where the partial disagrees with the truth. A correlation near zero means the
+    gate is not tracking the partial's reliability at all, whatever its effect on
+    the final score - in that case a fixed alpha is the simpler equivalent.
+
+    corr_gate_partial / corr_gate_true are controls: they show whether the gate is
+    instead just following the magnitude of one of the two signals.
+    """
+    reward_models = reward_model if isinstance(reward_model, list) else [reward_model]
+    if not trajectories or reward_models[0].gate_head is None:
+        return None
+    partial = np.array([state["partial_rew"] for t in trajectories for state in t.states], dtype=np.float64)
+    true = np.array([state["rew"] for t in trajectories for state in t.states], dtype=np.float64)
+    if len(partial) < 3:
+        return None
+    with th.no_grad():
+        tensors = th.as_tensor([convert_traj(t) for t in trajectories], dtype=th.float32)
+        gates = th.stack([m.gate(tensors).reshape(-1) for m in reward_models]).mean(dim=0).cpu().numpy()
+    if len(gates) != len(partial):
+        return None
+
+    z_partial = (partial - partial.mean()) / max(float(partial.std()), 1e-8)
+    z_true = (true - true.mean()) / max(float(true.std()), 1e-8)
+    error = np.abs(z_partial - z_true)
+
+    def _clean(value: float):
+        # json.dump would happily write NaN/Infinity, which is not valid JSON
+        return None if value is None or not np.isfinite(value) else float(value)
+
+    high = gates[error >= np.median(error)]
+    low = gates[error < np.median(error)]
+    return {
+        "n_states": int(len(gates)),
+        "corr_gate_partial_error": _clean(_spearman(gates, error)),
+        "corr_gate_partial": _clean(_spearman(gates, partial)),
+        "corr_gate_true": _clean(_spearman(gates, true)),
+        "mean_gate_high_error": _clean(high.mean()) if len(high) else None,
+        "mean_gate_low_error": _clean(low.mean()) if len(low) else None,
+    }
+
+
 def pretrain_reward_model(
     reward_model: RewardModel,
     trajectories: list[Trajectory],
@@ -309,6 +390,11 @@ def train_preference_reward_model(
     partial_alpha: float = 1.0,
     partial_alpha_penalty: float = 0.0,
     partial_prediction_coef: float = 0.0,
+    gate_holdout: bool = False,
+    gate_learning_rate: float | None = None,
+    gate_epochs: int | None = None,
+    gate_patience: int = 10,
+    gate_prior_penalty: float = 0.0,
 ) -> None:
     if not train_pairs:
         return
@@ -342,12 +428,16 @@ def train_preference_reward_model(
             rating_batch = ratings[batch_start:batch_end]
 
             if use_delta_loss and reward_model.gate_head is not None:
-                # per-state gate: R_hat = h(s,a) + g(s,a) * partial(s,a), g in [0,1]
+                # per-state gate: R_hat = h(s,a) + g(s,a) * alpha * partial(s,a), g in [0,1]
                 g1 = reward_model.gate(x1)
                 g2 = reward_model.gate(x2)
-                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
-                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std) * partial_alpha
+                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std) * partial_alpha
                 loss = gate_loss(y1 + g1 * t1_partial, y2 + g2 * t2_partial, rating_batch)
+                if gate_prior_penalty > 0:
+                    loss = loss + gate_prior_penalty * (
+                        ((1.0 - g1) ** 2).mean(dim=[1, 2]) + ((1.0 - g2) ** 2).mean(dim=[1, 2])
+                    )
             elif use_delta_loss:
                 alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
                 t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
@@ -392,14 +482,64 @@ def train_preference_reward_model(
 
     # naive + gate: phase 2 — freeze the trained reward, learn only the per-state gate
     if not use_delta_loss and reward_model.gate_head is not None:
-        train_gate_head(reward_model, train_pairs, convert_traj, epochs, batch_size, learning_rate, partial_mean, partial_std)
+        train_gate_head(
+            reward_model,
+            train_pairs,
+            val_pairs,
+            convert_traj,
+            gate_epochs if gate_epochs is not None else epochs,
+            batch_size,
+            gate_learning_rate if gate_learning_rate is not None else learning_rate,
+            partial_mean,
+            partial_std,
+            partial_alpha=partial_alpha,
+            holdout=gate_holdout,
+            patience=gate_patience,
+            prior_penalty=gate_prior_penalty,
+        )
 
 
-def train_gate_head(reward_model, train_pairs, convert_traj, epochs, batch_size, learning_rate, partial_mean, partial_std):
+def train_gate_head(
+    reward_model,
+    train_pairs,
+    val_pairs,
+    convert_traj,
+    epochs,
+    batch_size,
+    learning_rate,
+    partial_mean,
+    partial_std,
+    partial_alpha: float = 1.0,
+    holdout: bool = False,
+    patience: int = 10,
+    prior_penalty: float = 0.0,
+):
     """Phase 2 of the naive frozen-trunk gate: freeze the whole reward model and
     train ONLY the gate head, minimizing the preference loss on the composed
-    reward r_pred + g(s,a)*partial. The trunk is frozen, so the gate reads the
-    already-learned features and cannot disturb r_pred."""
+    reward r_pred + g(s,a)*alpha*partial. The trunk is frozen, so the gate reads
+    the already-learned features and cannot disturb r_pred.
+
+    With holdout=True the gate is fit and early-stopped on two halves of the
+    pairs the reward model was NOT gradient-trained on. This matters: on its own
+    training pairs r_pred has partly memorized the labels, so the residual the
+    gate could explain is near zero there and the gate collapses to g ~ 0
+    regardless of whether the partial is actually useful. Scoring the gate on
+    those same pairs would bake the same bias into the stopping rule, so both
+    halves come from the held-out side.
+
+    prior_penalty pulls g toward 1 (= use the partial fully, the naive baseline),
+    so shrinking the partial has to be paid for with preference evidence.
+    """
+    if holdout and len(val_pairs) >= 4:
+        shuffled = list(val_pairs)
+        random.shuffle(shuffled)
+        cut = len(shuffled) // 2
+        fit_pairs, score_pairs = shuffled[:cut], shuffled[cut:]
+    else:
+        fit_pairs, score_pairs = list(train_pairs), []
+    if not fit_pairs:
+        return
+
     for parameter in reward_model.parameters():
         parameter.requires_grad_(False)
     for parameter in reward_model.gate_head.parameters():
@@ -407,28 +547,69 @@ def train_gate_head(reward_model, train_pairs, convert_traj, epochs, batch_size,
     optimizer = Adam(reward_model.gate_head.parameters(), lr=learning_rate)
     loss_fn = PairwiseLoss()
     reward_model.eval()  # freeze any batch-norm running stats
+
+    best_state = deepcopy(reward_model.gate_head.state_dict())
+    best_val = float("inf")
+    best_epoch = 0
+    no_improvement = 0
+
     for epoch in range(epochs):
-        random.shuffle(train_pairs)
-        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(train_pairs, convert_traj)
+        random.shuffle(fit_pairs)
+        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(fit_pairs, convert_traj)
         running_loss, batches = 0.0, 0
-        for batch_start in range(0, len(train_pairs), batch_size):
-            batch_end = min(batch_start + batch_size, len(train_pairs))
-            batch_pairs = train_pairs[batch_start:batch_end]
+        for batch_start in range(0, len(fit_pairs), batch_size):
+            batch_end = min(batch_start + batch_size, len(fit_pairs))
+            batch_pairs = fit_pairs[batch_start:batch_end]
             x1, x2 = t1_tensor[batch_start:batch_end], t2_tensor[batch_start:batch_end]
             with th.no_grad():
                 h1, h2 = reward_model(x1), reward_model(x2)  # frozen r_pred
             g1, g2 = reward_model.gate(x1), reward_model.gate(x2)  # grads only into gate_head
-            t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
-            t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+            t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std) * partial_alpha
+            t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std) * partial_alpha
             loss = loss_fn(h1 + g1 * t1_partial, h2 + g2 * t2_partial, ratings[batch_start:batch_end])
+            total_loss = loss.sum()
+            if prior_penalty > 0:
+                total_loss = total_loss + prior_penalty * (((1.0 - g1) ** 2).mean() + ((1.0 - g2) ** 2).mean())
             optimizer.zero_grad()
-            loss.sum().backward()
+            total_loss.backward()
             optimizer.step()
             running_loss += float(loss.mean().item())
             batches += 1
-        print(f"gate epoch {epoch}: loss2={running_loss / max(batches, 1):.4f}")
+
+        train_loss = running_loss / max(batches, 1)
+        if not score_pairs:
+            print(f"gate epoch {epoch}: loss2={train_loss:.4f}")
+            continue
+
+        val_loss = _gate_validation_loss(
+            reward_model, score_pairs, convert_traj, loss_fn, partial_mean, partial_std, partial_alpha
+        )
+        print(f"gate epoch {epoch}: loss2={train_loss:.4f}, val_loss={val_loss:.4f}")
+        if val_loss < best_val:
+            best_val, best_epoch, no_improvement = val_loss, epoch, 0
+            best_state = deepcopy(reward_model.gate_head.state_dict())
+        else:
+            no_improvement += 1
+            if no_improvement >= patience:
+                print(f"stopping gate at epoch {epoch}; restoring epoch {best_epoch} val_loss={best_val:.4f}")
+                reward_model.gate_head.load_state_dict(best_state)
+                break
+    else:
+        if score_pairs:
+            reward_model.gate_head.load_state_dict(best_state)
+
     for parameter in reward_model.parameters():
         parameter.requires_grad_(True)
+
+
+def _gate_validation_loss(reward_model, pairs, convert_traj, loss_fn, partial_mean, partial_std, partial_alpha):
+    with th.no_grad():
+        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(pairs, convert_traj)
+        h1, h2 = reward_model(t1_tensor), reward_model(t2_tensor)
+        g1, g2 = reward_model.gate(t1_tensor), reward_model.gate(t2_tensor)
+        t1_partial = partial_reward_tensor(pairs, "t1", partial_mean, partial_std) * partial_alpha
+        t2_partial = partial_reward_tensor(pairs, "t2", partial_mean, partial_std) * partial_alpha
+        return float(loss_fn(h1 + g1 * t1_partial, h2 + g2 * t2_partial, ratings).mean().item())
 
 
 def split_preference_k_folds(rated_pairs: list[Preference], k: int) -> list[list[Preference]]:
@@ -456,6 +637,11 @@ def train_preference_reward_ensemble(
     partial_alpha: float = 1.0,
     partial_alpha_penalty: float = 0.0,
     partial_prediction_coef: float = 0.0,
+    gate_holdout: bool = False,
+    gate_learning_rate: float | None = None,
+    gate_epochs: int | None = None,
+    gate_patience: int = 10,
+    gate_prior_penalty: float = 0.0,
 ) -> None:
     if not rated_pairs:
         return
@@ -492,6 +678,11 @@ def train_preference_reward_ensemble(
             partial_alpha=partial_alpha,
             partial_alpha_penalty=partial_alpha_penalty,
             partial_prediction_coef=partial_prediction_coef,
+            gate_holdout=gate_holdout,
+            gate_learning_rate=gate_learning_rate,
+            gate_epochs=gate_epochs,
+            gate_patience=gate_patience,
+            gate_prior_penalty=gate_prior_penalty,
         )
 
 

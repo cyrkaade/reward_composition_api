@@ -30,6 +30,7 @@ from .partials import include_partial_feature, resolve_custom_partial
 from .rewards.model import RewardModel
 from .rewards.preferences import (
     choose_query_pairs,
+    gate_partial_error_stats,
     gate_statistics,
     pretrain_reward_model,
     rate_pairs_from_true_reward,
@@ -262,6 +263,11 @@ class RlhfTrainer:
                     partial_alpha=config.partial_alpha,
                     partial_alpha_penalty=config.partial_alpha_penalty,
                     partial_prediction_coef=config.partial_prediction_coef,
+                    gate_holdout=config.gate_holdout,
+                    gate_learning_rate=config.gate_lr,
+                    gate_epochs=config.gate_epochs,
+                    gate_patience=config.gate_patience,
+                    gate_prior_penalty=config.gate_prior_penalty,
                 )
                 self.runtime.reward_model = None
                 self.runtime.reward_models = self.reward_models
@@ -281,6 +287,11 @@ class RlhfTrainer:
                     partial_alpha=config.partial_alpha,
                     partial_alpha_penalty=config.partial_alpha_penalty,
                     partial_prediction_coef=config.partial_prediction_coef,
+                    gate_holdout=config.gate_holdout,
+                    gate_learning_rate=config.gate_lr,
+                    gate_epochs=config.gate_epochs,
+                    gate_patience=config.gate_patience,
+                    gate_prior_penalty=config.gate_prior_penalty,
                 )
                 self.runtime.reward_model = self.reward_model
                 self.runtime.reward_models = None
@@ -297,6 +308,18 @@ class RlhfTrainer:
                     s = self.runtime.gate_stats
                     print(f"learned gate g: mean={s['mean']:.3f} p10={s['p10']:.3f} p50={s['p50']:.3f} p90={s['p90']:.3f} "
                           f"(frac<0.1={s['frac_below_0.1']:.2f}, frac>0.9={s['frac_above_0.9']:.2f})")
+                if config.gate_diagnostic:
+                    self.runtime.gate_error_stats = gate_partial_error_stats(
+                        self.reward_models, gate_trajectories, self.convert_traj
+                    )
+                    if self.runtime.gate_error_stats:
+                        d = self.runtime.gate_error_stats
+                        print(
+                            f"gate diagnostic: corr(g, |partial-true|)={d['corr_gate_partial_error']:+.3f} "
+                            f"(negative = the gate closes where the partial is wrong); "
+                            f"mean g on high-error states={d['mean_gate_high_error']:.3f} vs "
+                            f"low-error={d['mean_gate_low_error']:.3f}"
+                        )
             stat_trajectories = [pair.t1 for pair in self.rated_train + self.rated_val] + [
                 pair.t2 for pair in self.rated_train + self.rated_val
             ]
@@ -350,6 +373,7 @@ def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel
             predict_partial=config.partial_prediction_coef > 0,
             batchnorm_output=config.batchnorm_model_reward,
             gate_partial=config.gate_partial,
+            gate_init=config.gate_init,
         )
         for _ in range(config.reward_model_ensemble_size)
     ]
@@ -637,6 +661,8 @@ class ExperimentRunner:
             "initial_timesteps": config.initial_timesteps,
             "policy_timesteps_per_round": config.policy_timesteps_per_round,
             "final_policy_timesteps": config.final_policy_timesteps,
+            "final_policy": config.final_policy,
+            "collection_timesteps": config.collection_timesteps,
             "policy_learning_kwargs": config.policy_learning_kwargs or {},
             "synthetic_queries": synthetic_queries,
             "query_budget": config.query_budget if is_preference else 0,
@@ -677,6 +703,11 @@ class ExperimentRunner:
             "final_partial_alpha": runtime.partial_alpha,
             "gate_partial": runtime.gate_partial,
             "gate_stats": runtime.gate_stats,
+            "gate_holdout": self.config.gate_holdout,
+            "gate_lr": self.config.gate_lr,
+            "gate_init": self.config.gate_init,
+            "gate_prior_penalty": self.config.gate_prior_penalty,
+            "gate_error_stats": runtime.gate_error_stats,
             "reward_composition": runtime.composition,
         }
 

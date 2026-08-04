@@ -50,6 +50,7 @@ class LearnedRewardRuntime:
     output_mean: float | None = None
     output_std: float | None = None
     gate_stats: dict | None = None
+    gate_error_stats: dict | None = None
     target_mean: float = 0.0
     target_std: float = 1.0
     reward_min: float | None = None
@@ -161,7 +162,10 @@ class PreferenceRewardWrapper(gym.Wrapper):
         )
         if self.runtime.gate_partial and self.runtime.composition in {"delta", "naive"}:
             model_reward, gate = self.model_output_and_gate(observation, action, partial_reward)
-            training_reward = gate * self.runtime.transform_partial_reward(partial_reward) + model_reward
+            # composed_partial_reward applies alpha; the gate then scales it per state.
+            # (This path used to call transform_partial_reward directly, silently
+            # dropping partial_alpha whenever the gate was enabled.)
+            training_reward = gate * self.runtime.composed_partial_reward(partial_reward) + model_reward
             info["gate"] = gate
         else:
             model_reward = self.model_reward(observation, action, partial_reward)

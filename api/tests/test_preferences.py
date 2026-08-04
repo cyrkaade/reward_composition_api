@@ -294,6 +294,119 @@ def test_per_state_gate_trains_and_stays_in_unit_interval():
     assert 0.0 <= stats["mean"] <= 1.0
 
 
+def test_gate_init_starts_at_the_requested_value():
+    """gate_init=1 must start at 'trust the partial fully' (the naive baseline),
+    so any shrinkage below 1 is something the preferences actually paid for."""
+    for target in (0.5, 0.95):
+        model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,), gate_partial=True, gate_init=target)
+        g = model.gate(th.randn(7, FEATURE_DIM)).detach().reshape(-1)
+        assert th.allclose(g, th.full_like(g, target), atol=1e-4)
+        # weights are zeroed, so the init is a constant regardless of the input
+        assert float(g.std()) < 1e-6
+
+
+def test_gate_head_is_excluded_from_l1_regularization():
+    """L1 on a bounded [0,1] gate does not regularize capacity, it just drags the
+    gate toward 0.5 - and in naive mode it acts on a head with no gradient yet."""
+    from rcomp.rewards.model import RegularizationLoss
+
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,), gate_partial=True, gate_init=0.95)
+    before = float(RegularizationLoss(lambda_reg=1.0)(model))
+    with th.no_grad():
+        model.gate_head.bias.add_(100.0)
+    after = float(RegularizationLoss(lambda_reg=1.0)(model))
+    assert after == pytest.approx(before)
+
+
+def test_gate_holdout_fits_on_pairs_the_model_did_not_train_on():
+    """With gate_holdout the gate must be fit on held-out preferences: on the
+    trunk's own training pairs the residual is memorized away and the gate
+    collapses regardless of whether the partial is useful."""
+    th.manual_seed(0)
+    random.seed(0)
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,), gate_partial=True, gate_init=0.95)
+    pairs = make_rated_pairs(20)
+    train_preference_reward_model(
+        model, pairs[:10], pairs[10:], convert_traj=convert_traj,
+        use_delta_loss=False, batch_size=4, epochs=3, patience=5,
+        gate_holdout=True, gate_learning_rate=1e-3, gate_patience=2,
+    )
+    g = model.gate(th.zeros((5, FEATURE_DIM)))
+    assert th.all(g >= 0) and th.all(g <= 1)
+
+
+def test_gate_prior_penalty_keeps_the_gate_closer_to_one():
+    """The penalty makes 'use the partial fully' the null hypothesis."""
+    results = {}
+    for penalty in (0.0, 50.0):
+        th.manual_seed(0)
+        random.seed(0)
+        model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,), gate_partial=True, gate_init=0.5)
+        pairs = make_rated_pairs(16)
+        train_preference_reward_model(
+            model, pairs[:8], pairs[8:], convert_traj=convert_traj,
+            use_delta_loss=True, batch_size=4, epochs=6, patience=10,
+            gate_prior_penalty=penalty,
+        )
+        results[penalty] = float(model.gate(th.zeros((8, FEATURE_DIM))).detach().mean())
+    assert results[50.0] > results[0.0]
+
+
+def test_gate_partial_error_diagnostic_detects_a_gate_that_tracks_partial_error():
+    """A gate that closes exactly where the partial disagrees with the true
+    reward must produce a negative corr(g, |partial error|); the metric is what
+    tells us whether the gate learned trust or just rescaled the partial."""
+    from rcomp.rewards.preferences import gate_partial_error_stats
+
+    class IdealGate:
+        """Stub standing in for a gate that perfectly knows where the partial is
+        wrong: open when the partial matches the true reward, closed otherwise."""
+
+        gate_head = object()
+
+        def gate(self, x):  # x is (n_traj, traj_len, [obs, act, partial])
+            obs, partial = x[..., 0], x[..., 2]
+            return th.where(th.abs(obs - partial) < 0.5, 0.9, 0.1).unsqueeze(-1)
+
+    # true reward and partial both have to vary, or the error is constant and the
+    # correlation is undefined. Two trustworthy groups, two untrustworthy ones.
+    trajectories = (
+        [make_trajectory(4, reward=2.0, partial=2.0) for _ in range(2)]
+        + [make_trajectory(4, reward=0.0, partial=0.0) for _ in range(2)]
+        + [make_trajectory(4, reward=2.0, partial=0.0) for _ in range(2)]
+        + [make_trajectory(4, reward=0.0, partial=2.0) for _ in range(2)]
+    )
+
+    stats = gate_partial_error_stats(IdealGate(), trajectories, convert_traj)
+    assert stats["n_states"] == 32
+    assert stats["corr_gate_partial_error"] < -0.9
+    assert stats["mean_gate_high_error"] < stats["mean_gate_low_error"]
+
+    # A gate that has collapsed to a constant carries no per-state information,
+    # so the correlation is undefined (None) rather than a spurious number. This
+    # is the case a fixed alpha would reproduce exactly.
+    class ConstantGate:
+        gate_head = object()
+
+        def gate(self, x):
+            return th.full((*x.shape[:-1], 1), 0.3)
+
+    flat = gate_partial_error_stats(ConstantGate(), trajectories, convert_traj)
+    assert flat["corr_gate_partial_error"] is None
+
+
+def test_gate_diagnostic_returns_json_safe_values():
+    """A degenerate partial (no variance in the error) must not leak NaN into
+    metadata.json, which would make the file invalid JSON."""
+    from rcomp.rewards.preferences import gate_partial_error_stats
+
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,), gate_partial=True)
+    identical = [make_trajectory(4, reward=1.0, partial=1.0) for _ in range(4)]
+    stats = gate_partial_error_stats(model, identical, convert_traj)
+    for key, value in stats.items():
+        assert value is None or np.isfinite(value), f"{key} is not JSON-safe: {value}"
+
+
 def test_pairwise_loss_prefers_higher_first_input():
     loss = PairwiseLoss()
     high = th.full((1, 2, 1), 3.0)

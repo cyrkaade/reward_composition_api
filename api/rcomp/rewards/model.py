@@ -1,3 +1,5 @@
+import math
+
 import torch as th
 from torch import Tensor
 
@@ -29,7 +31,7 @@ class OutputBatchNorm(th.nn.Module):
 
 
 class RewardModel(th.nn.Module):
-    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0, predict_partial=False, batchnorm_output=False, gate_partial=False):
+    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0, predict_partial=False, batchnorm_output=False, gate_partial=False, gate_init=0.5):
         super().__init__()
         layers = []
         last_size = input_size
@@ -41,6 +43,14 @@ class RewardModel(th.nn.Module):
         self.head = th.nn.Linear(last_size, 1)
         self.partial_head = th.nn.Linear(last_size, 1) if predict_partial else None
         self.gate_head = th.nn.Linear(last_size, 1) if gate_partial else None
+        if self.gate_head is not None:
+            # Start the gate at a known constant g = gate_init everywhere: zero the
+            # weights and put the value in the bias. gate_init=1 means "trust the
+            # partial fully" (the naive baseline), so shrinking it takes evidence.
+            clamped = min(max(float(gate_init), 1e-4), 1.0 - 1e-4)
+            bias = math.log(clamped / (1.0 - clamped))
+            th.nn.init.zeros_(self.gate_head.weight)
+            th.nn.init.constant_(self.gate_head.bias, bias)
         self.output_bn = OutputBatchNorm() if batchnorm_output else None
         self.alpha = th.nn.Parameter(th.tensor(float(alpha_init))) if learn_alpha else None
 
@@ -102,8 +112,16 @@ class RegularizationLoss(th.nn.Module):
         self.lambda_reg = lambda_reg
 
     def forward(self, model: th.nn.Module) -> Tensor:
-        # alpha is anchored by its own mse(alpha, alpha_init) term, not weight decay
-        parameters = [p for name, p in model.named_parameters() if name != "alpha"]
+        # alpha is anchored by its own mse(alpha, alpha_init) term, not weight decay.
+        # gate_head is excluded too: its output is already bounded to [0, 1], so L1
+        # here does not regularize capacity, it just drags the gate toward g = 0.5
+        # (and in naive mode it acts on a head that receives no gradient in phase 1,
+        # destroying the gate_init before the gate is ever trained).
+        parameters = [
+            p
+            for name, p in model.named_parameters()
+            if name != "alpha" and not name.startswith("gate_head")
+        ]
         if self.regularization_type == 'L1':
             l1_norm = sum(p.abs().sum() for p in parameters)
             return self.lambda_reg * l1_norm

@@ -96,6 +96,13 @@ class ExperimentConfig:
     partial_prediction_coef: float = _f(0.0, "Weight of the auxiliary MSE loss for predicting the (normalized) partial reward; 0 disables the extra head")
     batchnorm_model_reward: bool = _f(False, "Mini-batch normalize the model output (delta) inside the loss and at inference (batch stats in training, running stats at eval)")
     gate_partial: bool = _f(False, "Learn a per-state gate g(s,a) in [0,1] so the composed reward is g*partial + delta (the model decides how much to trust the partial per state)")
+    gate_holdout: bool = _f(False, "Train the naive frozen-trunk gate on held-out preferences with early stopping, instead of the pairs the reward model was already fit on")
+    gate_lr: float | None = _f(None, "Learning rate for the gate head (reward_model_lr when omitted); lower values avoid saturating the sigmoid")
+    gate_epochs: int | None = _f(None, "Epochs for the gate phase (reward_model_epochs when omitted)")
+    gate_patience: int = _f(10, "Early-stopping patience for the gate phase (requires --gate-holdout)")
+    gate_init: float = _f(0.5, "Initial value of the per-state gate, applied as a bias init (1.0 = start by fully trusting the partial, i.e. the naive baseline)")
+    gate_prior_penalty: float = _f(0.0, "Weight of a penalty pulling g toward 1, so shrinking the partial requires evidence from the preferences")
+    gate_diagnostic: bool = _f(False, "Record the rank correlation between the gate g(s,a) and the partial's error |partial - true reward| (negative = the gate distrusts the partial where it is wrong)")
 
     pretrain_reward_model: bool = _f(False, "Pretrain the reward model before preference training")
     pretrain_target: str = _f("partial", "Pretraining regression target", choices=PRETRAIN_TARGETS)
@@ -248,6 +255,16 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("gate_partial requires mode 'delta' (joint) or 'naive' (frozen-trunk gate)")
     if config.gate_partial and config.learn_partial_alpha:
         raise ConfigError("gate_partial and learn_partial_alpha are mutually exclusive")
+    if not 0.0 < config.gate_init <= 1.0:
+        raise ConfigError("gate_init must be in (0, 1]")
+    if config.gate_lr is not None and config.gate_lr <= 0:
+        raise ConfigError("gate_lr must be greater than zero")
+    if config.gate_epochs is not None and config.gate_epochs <= 0:
+        raise ConfigError("gate_epochs must be greater than zero")
+    if config.gate_patience <= 0:
+        raise ConfigError("gate_patience must be greater than zero")
+    if config.gate_prior_penalty < 0:
+        raise ConfigError("gate_prior_penalty must be non-negative")
     _validate_common_numeric(config.timesteps, config.rlhf_rounds, config.query_budget, config.fragment_length or 0)
     if config.initial_timesteps < 0:
         raise ConfigError("initial_timesteps must be non-negative")
