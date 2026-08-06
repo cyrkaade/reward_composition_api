@@ -33,6 +33,7 @@ from .rewards.preferences import (
     choose_query_pairs,
     gate_partial_error_stats,
     gate_statistics,
+    query_fisher_information,
     reward_model_diagnostics,
     pretrain_reward_model,
     rate_pairs_from_true_reward,
@@ -241,6 +242,31 @@ class RlhfTrainer:
             transform_partial=self.runtime.composed_partial_reward,
         )
         rated_pairs = rate_pairs_from_true_reward(pairs)
+
+        # How informative were the queries this round's selector actually chose?
+        # Scored with the model that did the choosing, i.e. before this round's
+        # training. At round 0 that model is either partial-pretrained or random,
+        # which is exactly the cold-start comparison.
+        if config.query_fisher_diagnostic:
+            fisher = query_fisher_information(
+                self.reward_models,
+                rated_pairs,
+                self.convert_traj,
+                partial_mean=self.runtime.partial_mean,
+                partial_std=self.runtime.partial_std,
+                partial_alpha=config.partial_alpha,
+                add_partial=self.add_partial_to_predictions,
+            )
+            if fisher:
+                fisher["round"] = len(self.runtime.query_fisher)
+                fisher["selector_was_trained"] = query_model is not None
+                self.runtime.query_fisher.append(fisher)
+                print(
+                    f"query Fisher information (round {fisher['round']}): "
+                    f"mean={fisher['fisher_mean']:.4g} median={fisher['fisher_median']:.4g} "
+                    f"(selector had a model: {fisher['selector_was_trained']})"
+                )
+
         split = int(len(rated_pairs) * 0.8)
         self.rated_train.extend(rated_pairs[:split])
         self.rated_val.extend(rated_pairs[split:])
@@ -756,6 +782,7 @@ class ExperimentRunner:
             "gate_error_stats": runtime.gate_error_stats,
             "rm_diagnostics": runtime.rm_diagnostics,
             "rm_diagnostics_before_training": runtime.rm_diagnostics_before,
+            "query_fisher": runtime.query_fisher,
             "reward_composition": runtime.composition,
         }
 

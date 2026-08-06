@@ -471,6 +471,48 @@ def test_reward_model_diagnostics_scores_a_pretrained_model_above_a_random_one()
     assert after["bt_loss"] < before["bt_loss"]
 
 
+def test_query_fisher_information_prefers_uncertain_queries():
+    """A query the model is already certain about carries almost no information,
+    however different the two fragments are: the p(1-p) term collapses it. This
+    is the measure for the cold-start claim, so it has to rank queries by how
+    much their answer would actually pin the parameters down."""
+    from rcomp.rewards.preferences import query_fisher_information
+
+    th.manual_seed(0)
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,))
+
+    # obs == reward, so a big reward gap is a confidently-predicted comparison
+    certain = [Preference(make_trajectory(3, reward=50.0), make_trajectory(3, reward=-50.0), 1.0)]
+    uncertain = [Preference(make_trajectory(3, reward=0.01), make_trajectory(3, reward=-0.01), 1.0)]
+
+    f_certain = query_fisher_information(model, certain, convert_traj)
+    f_uncertain = query_fisher_information(model, uncertain, convert_traj)
+    assert f_certain["fisher_mean"] < f_uncertain["fisher_mean"]
+    assert f_certain["n_pairs_scored"] == 1
+
+
+def test_query_fisher_information_is_zero_for_indistinguishable_fragments():
+    """Identical fragments have zero gradient difference, so nothing is learned
+    from asking about them even though p is exactly 0.5."""
+    from rcomp.rewards.preferences import query_fisher_information
+
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,))
+    same = [Preference(make_trajectory(3, reward=1.0), make_trajectory(3, reward=1.0), 1.0)]
+    assert query_fisher_information(model, same, convert_traj)["fisher_mean"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_query_fisher_information_averages_over_an_ensemble():
+    from rcomp.rewards.preferences import query_fisher_information
+
+    th.manual_seed(0)
+    models = [RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,)) for _ in range(3)]
+    pairs = make_rated_pairs(6)
+    stats = query_fisher_information(models, pairs, convert_traj, max_pairs=4)
+    assert stats["n_pairs_scored"] == 4
+    assert stats["fisher_mean"] >= 0.0
+    assert stats["fisher_total"] >= stats["fisher_median"]
+
+
 def test_pairwise_loss_prefers_higher_first_input():
     loss = PairwiseLoss()
     high = th.full((1, 2, 1), 3.0)

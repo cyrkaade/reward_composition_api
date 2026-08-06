@@ -105,6 +105,7 @@ class ExperimentConfig:
     gate_diagnostic: bool = _f(False, "Record the rank correlation between the gate g(s,a) and the partial's error |partial - true reward| (negative = the gate distrusts the partial where it is wrong)")
     reward_model_diagnostics: bool = _f(False, "Record Bradley-Terry loss and ranking accuracy on held-out preferences, before and after preference training, and with the partial input feature ablated (measures how much the model relies on that feature)")
     save_reward_model: bool = _f(False, "Save the trained reward model weights to reward_model.pt for offline analysis")
+    query_fisher_diagnostic: bool = _f(False, "Record the Bradley-Terry Fisher information of the queries active learning selected each round (how much the answers are expected to pin down the reward parameters)")
 
     pretrain_reward_model: bool = _f(False, "Pretrain the reward model before preference training")
     pretrain_target: str = _f("partial", "Pretraining regression target", choices=PRETRAIN_TARGETS)

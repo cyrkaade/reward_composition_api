@@ -320,6 +320,72 @@ def reward_model_diagnostics(
     }
 
 
+def query_fisher_information(
+    reward_model,
+    pairs: list[Preference],
+    convert_traj: Callable[[Trajectory], list[list[float]]],
+    partial_mean: float = 0.0,
+    partial_std: float = 1.0,
+    partial_alpha: float = 1.0,
+    add_partial: bool = False,
+    max_pairs: int = 256,
+):
+    """How informative a set of preference queries is about the reward parameters.
+
+    Under Bradley-Terry, asking about fragments A and B with
+        p = sigmoid(R_A - R_B)
+    contributes Fisher information
+        I = p(1-p) * (dR_A - dR_B)(dR_A - dR_B)^T
+    about the reward parameters. We report its trace,
+        p(1-p) * ||dR_A - dR_B||^2,
+    the standard scalar summary: how much the answer is expected to pin the
+    parameters down. Two things make a query informative - the outcome must be
+    uncertain (p near 0.5, so p(1-p) is large) AND the two fragments must be
+    distinguishable by the parameters (large gradient difference). A query the
+    model is already sure about carries almost no information however different
+    the fragments are.
+
+    This is the measurement for the cold-start claim: a reward model pretrained
+    on the partial should pick queries with higher Fisher information at round 0
+    than a randomly initialised one, which has no basis for choosing at all.
+
+    The partial contributes a constant offset to the reward, so it shifts p but
+    has no gradient of its own; with add_partial=True it is included in p only.
+    """
+    models = reward_model if isinstance(reward_model, list) else [reward_model]
+    if not pairs or not models:
+        return None
+    sample = pairs if len(pairs) <= max_pairs else random.sample(list(pairs), max_pairs)
+
+    scores = []
+    for pair in sample:
+        x1 = th.as_tensor([convert_traj(pair.t1)], dtype=th.float32)
+        x2 = th.as_tensor([convert_traj(pair.t2)], dtype=th.float32)
+        offset = 0.0
+        if add_partial:
+            p1 = float(sum((s["partial_rew"] - partial_mean) / max(partial_std, 1e-8) for s in pair.t1.states))
+            p2 = float(sum((s["partial_rew"] - partial_mean) / max(partial_std, 1e-8) for s in pair.t2.states))
+            offset = partial_alpha * (p1 - p2)
+
+        per_model = []
+        for model in models:
+            model.zero_grad(set_to_none=True)
+            diff = model(x1).sum() - model(x2).sum()
+            grads = th.autograd.grad(diff, [p for p in model.parameters() if p.requires_grad], allow_unused=True)
+            grad_sq = float(sum(float((g**2).sum()) for g in grads if g is not None))
+            prob = float(th.sigmoid(diff.detach() + offset))
+            per_model.append(prob * (1.0 - prob) * grad_sq)
+        scores.append(float(np.mean(per_model)))
+
+    scores = np.asarray(scores, dtype=np.float64)
+    return {
+        "n_pairs_scored": int(len(scores)),
+        "fisher_mean": float(scores.mean()),
+        "fisher_median": float(np.median(scores)),
+        "fisher_total": float(scores.sum()),
+    }
+
+
 def _rankdata(x: np.ndarray) -> np.ndarray:
     """Ranks with ties averaged. Ties matter here: a gate that has collapsed to a
     constant is all ties, and naive argsort ranking would invent an ordering and
