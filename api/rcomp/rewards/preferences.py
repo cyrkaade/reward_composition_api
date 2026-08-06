@@ -246,6 +246,80 @@ def gate_statistics(reward_model, trajectories, convert_traj):
     }
 
 
+def reward_model_diagnostics(
+    reward_model,
+    pairs: list[Preference],
+    convert_traj: Callable[[Trajectory], list[list[float]]],
+    partial_mean: float = 0.0,
+    partial_std: float = 1.0,
+    partial_alpha: float = 1.0,
+):
+    """Bradley-Terry loss and ranking accuracy on held-out preference pairs.
+
+    Three numbers, each answering a different question:
+
+    - `bt_loss` / `accuracy`: how well the reward model ALONE explains
+      preferences it was not trained on. Comparing this between a
+      partial-pretrained model and a randomly initialised one is the direct
+      test of whether pretraining gives the model a head start (M3).
+
+    - `*_partial_ablated`: the same with the partial-reward input feature zeroed
+      out. How much worse the model gets is how much it actually relies on that
+      feature (M2). Note this is measured, not inferred from weights: the
+      partial sits on a different numeric scale from the observations, so a
+      small weight on it does not imply small influence, and comparing raw
+      weight magnitudes across inputs mostly measures input scale.
+
+    - `*_composed`: model + alpha*partial, i.e. the reward the policy actually
+      trains on, so you can see whether the composition explains preferences
+      better than the learned model on its own.
+    """
+    models = reward_model if isinstance(reward_model, list) else [reward_model]
+    if not pairs or not models:
+        return None
+
+    loss_fn = PairwiseLoss()
+    with th.no_grad():
+        x1, x2, ratings = rated_pairs_to_tensors(pairs, convert_traj)
+        p1 = partial_reward_tensor(pairs, "t1", partial_mean, partial_std) * partial_alpha
+        p2 = partial_reward_tensor(pairs, "t2", partial_mean, partial_std) * partial_alpha
+
+        def score(a, b):
+            y1 = th.stack([m(a) for m in models]).mean(dim=0)
+            y2 = th.stack([m(b) for m in models]).mean(dim=0)
+            return y1, y2
+
+        def summarize(y1, y2):
+            loss = float(loss_fn(y1, y2, ratings).mean().item())
+            pref = (y1.sum(dim=[1, 2]) > y2.sum(dim=[1, 2])).float()
+            acc = float((pref == ratings).float().mean().item())
+            return loss, acc
+
+        y1, y2 = score(x1, x2)
+        loss_plain, acc_plain = summarize(y1, y2)
+        loss_comp, acc_comp = summarize(y1 + p1, y2 + p2)
+
+        # ablate the partial feature: it is the LAST column of the model input
+        # (reward_model_features concatenates obs, action, then the partial).
+        a1, a2 = x1.clone(), x2.clone()
+        a1[..., -1] = 0.0
+        a2[..., -1] = 0.0
+        ya1, ya2 = score(a1, a2)
+        loss_abl, acc_abl = summarize(ya1, ya2)
+
+    return {
+        "n_pairs": len(pairs),
+        "bt_loss": loss_plain,
+        "accuracy": acc_plain,
+        "bt_loss_partial_ablated": loss_abl,
+        "accuracy_partial_ablated": acc_abl,
+        "bt_loss_increase_when_ablated": loss_abl - loss_plain,
+        "accuracy_drop_when_ablated": acc_plain - acc_abl,
+        "bt_loss_composed": loss_comp,
+        "accuracy_composed": acc_comp,
+    }
+
+
 def _rankdata(x: np.ndarray) -> np.ndarray:
     """Ranks with ties averaged. Ties matter here: a gate that has collapsed to a
     constant is all ties, and naive argsort ranking would invent an ordering and

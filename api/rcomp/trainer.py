@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
+import torch as th
 from gymnasium.spaces.utils import flatdim
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalCallback, StopTrainingOnRewardThreshold
@@ -32,6 +33,7 @@ from .rewards.preferences import (
     choose_query_pairs,
     gate_partial_error_stats,
     gate_statistics,
+    reward_model_diagnostics,
     pretrain_reward_model,
     rate_pairs_from_true_reward,
     reward_model_io_stats,
@@ -248,6 +250,25 @@ class RlhfTrainer:
     def maybe_train_reward_model(self) -> None:
         config = self.config
         if self.rated_train:
+            # M3: score the model on held-out preferences BEFORE any preference
+            # training. For a partial-pretrained model this is the head start it
+            # gets over a randomly initialised one; recorded once, on the first
+            # round, while the model is still in its initial state.
+            if config.reward_model_diagnostics and self.runtime.rm_diagnostics_before is None:
+                self.runtime.rm_diagnostics_before = reward_model_diagnostics(
+                    self.reward_models,
+                    self.rated_val or self.rated_train,
+                    self.convert_traj,
+                    partial_mean=self.runtime.partial_mean,
+                    partial_std=self.runtime.partial_std,
+                    partial_alpha=config.partial_alpha,
+                )
+                if self.runtime.rm_diagnostics_before:
+                    d = self.runtime.rm_diagnostics_before
+                    print(
+                        f"reward model BEFORE preference training: bt_loss={d['bt_loss']:.4f} "
+                        f"accuracy={d['accuracy']:.3f} (pretrained={config.pretrain_reward_model})"
+                    )
             if len(self.reward_models) > 1:
                 train_preference_reward_ensemble(
                     self.reward_models,
@@ -329,6 +350,25 @@ class RlhfTrainer:
                 self.convert_traj,
             )
             print(f"reward model output stats: mean={self.runtime.output_mean}, std={self.runtime.output_std}")
+
+            # M2: how much does the trained model rely on the partial input feature?
+            # Measured by ablating it, not by comparing weight magnitudes.
+            if config.reward_model_diagnostics and self.rated_val:
+                self.runtime.rm_diagnostics = reward_model_diagnostics(
+                    self.reward_models,
+                    self.rated_val,
+                    self.convert_traj,
+                    partial_mean=self.runtime.partial_mean,
+                    partial_std=self.runtime.partial_std,
+                    partial_alpha=config.partial_alpha,
+                )
+                if self.runtime.rm_diagnostics:
+                    d = self.runtime.rm_diagnostics
+                    print(
+                        f"reward model on held-out prefs: bt_loss={d['bt_loss']:.4f} acc={d['accuracy']:.3f}; "
+                        f"with the partial feature ablated acc={d['accuracy_partial_ablated']:.3f} "
+                        f"(drop={d['accuracy_drop_when_ablated']:+.3f} = reliance on the partial feature)"
+                    )
 
     def train_policy_round(self, round_index: int) -> None:
         config = self.config
@@ -554,6 +594,12 @@ class ExperimentRunner:
         suite = self.suite
         paths = RunPaths(run_dir)
         model.save(paths.final_model)
+        if config.save_reward_model and runtime is not None:
+            reward_models = runtime.reward_models or ([runtime.reward_model] if runtime.reward_model else [])
+            if reward_models:
+                # small MLPs; keeping them makes any later offline analysis of the
+                # learned reward possible without re-running training
+                th.save([m.state_dict() for m in reward_models], run_dir / "reward_model.pt")
         vecnormalize_path = None
         if isinstance(train_env, VecNormalize):
             train_env.save(paths.vecnormalize)
@@ -708,6 +754,8 @@ class ExperimentRunner:
             "gate_init": self.config.gate_init,
             "gate_prior_penalty": self.config.gate_prior_penalty,
             "gate_error_stats": runtime.gate_error_stats,
+            "rm_diagnostics": runtime.rm_diagnostics,
+            "rm_diagnostics_before_training": runtime.rm_diagnostics_before,
             "reward_composition": runtime.composition,
         }
 

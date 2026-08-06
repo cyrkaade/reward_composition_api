@@ -103,6 +103,8 @@ class ExperimentConfig:
     gate_init: float = _f(0.5, "Initial value of the per-state gate, applied as a bias init (1.0 = start by fully trusting the partial, i.e. the naive baseline)")
     gate_prior_penalty: float = _f(0.0, "Weight of a penalty pulling g toward 1, so shrinking the partial requires evidence from the preferences")
     gate_diagnostic: bool = _f(False, "Record the rank correlation between the gate g(s,a) and the partial's error |partial - true reward| (negative = the gate distrusts the partial where it is wrong)")
+    reward_model_diagnostics: bool = _f(False, "Record Bradley-Terry loss and ranking accuracy on held-out preferences, before and after preference training, and with the partial input feature ablated (measures how much the model relies on that feature)")
+    save_reward_model: bool = _f(False, "Save the trained reward model weights to reward_model.pt for offline analysis")
 
     pretrain_reward_model: bool = _f(False, "Pretrain the reward model before preference training")
     pretrain_target: str = _f("partial", "Pretraining regression target", choices=PRETRAIN_TARGETS)

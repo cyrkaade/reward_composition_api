@@ -51,6 +51,8 @@ class LearnedRewardRuntime:
     output_std: float | None = None
     gate_stats: dict | None = None
     gate_error_stats: dict | None = None
+    rm_diagnostics: dict | None = None
+    rm_diagnostics_before: dict | None = None
     target_mean: float = 0.0
     target_std: float = 1.0
     reward_min: float | None = None

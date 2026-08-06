@@ -407,6 +407,70 @@ def test_gate_diagnostic_returns_json_safe_values():
         assert value is None or np.isfinite(value), f"{key} is not JSON-safe: {value}"
 
 
+def test_reward_model_diagnostics_detect_reliance_on_the_partial_feature():
+    """M2 is measured by ablating the partial input feature, not by comparing
+    weight magnitudes: the partial sits on a different numeric scale from the
+    observations, so a small weight on it does not mean small influence."""
+    from rcomp.rewards.preferences import reward_model_diagnostics
+
+    class UsesOnlyPartial:
+        """Reward = the partial feature (the LAST input column)."""
+
+        def __call__(self, x):
+            return x[..., -1:].clone()
+
+    class IgnoresPartial:
+        """Reward = the observation feature; the partial column is unused."""
+
+        def __call__(self, x):
+            return x[..., :1].clone()
+
+    # obs == reward, so IgnoresPartial ranks perfectly; partial is anti-correlated
+    # with the true reward, so UsesOnlyPartial ranks backwards.
+    pairs = [
+        Preference(make_trajectory(3, reward=2.0, partial=-2.0),
+                   make_trajectory(3, reward=0.0, partial=0.0), 1.0),
+        Preference(make_trajectory(3, reward=3.0, partial=-3.0),
+                   make_trajectory(3, reward=1.0, partial=-1.0), 1.0),
+        Preference(make_trajectory(3, reward=0.0, partial=0.0),
+                   make_trajectory(3, reward=4.0, partial=-4.0), 0.0),
+    ]
+
+    dependent = reward_model_diagnostics(UsesOnlyPartial(), pairs, convert_traj)
+    independent = reward_model_diagnostics(IgnoresPartial(), pairs, convert_traj)
+
+    # zeroing the partial destroys the model that depends on it ...
+    assert dependent["accuracy_drop_when_ablated"] != 0.0
+    assert dependent["bt_loss_increase_when_ablated"] != 0.0
+    # ... and does nothing to the model that never used it
+    assert independent["accuracy_drop_when_ablated"] == 0.0
+    assert independent["bt_loss_increase_when_ablated"] == pytest.approx(0.0, abs=1e-6)
+    assert independent["accuracy"] == 1.0
+    assert dependent["n_pairs"] == 3
+
+
+def test_reward_model_diagnostics_scores_a_pretrained_model_above_a_random_one():
+    """M3 experiment 1: a model pretrained on the partial should already explain
+    held-out preferences better than a randomly initialised one."""
+    from rcomp.rewards.preferences import reward_model_diagnostics
+
+    th.manual_seed(0)
+    random.seed(0)
+    pairs = make_rated_pairs(24)
+    trajectories = [p.t1 for p in pairs] + [p.t2 for p in pairs]
+
+    random_init = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(16,))
+    pretrained = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(16,))
+    pretrain_reward_model(
+        pretrained, trajectories, convert_traj,
+        target="true", epochs=60, batch_size=16, learning_rate=0.01,
+    )
+
+    before = reward_model_diagnostics(random_init, pairs, convert_traj)
+    after = reward_model_diagnostics(pretrained, pairs, convert_traj)
+    assert after["bt_loss"] < before["bt_loss"]
+
+
 def test_pairwise_loss_prefers_higher_first_input():
     loss = PairwiseLoss()
     high = th.full((1, 2, 1), 3.0)
