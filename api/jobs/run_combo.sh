@@ -2,7 +2,7 @@
 #SBATCH --job-name=combo
 #SBATCH --output=logs/slurm/combo_%A_%a.out
 #SBATCH --error=logs/slurm/combo_%A_%a.err
-#SBATCH --time=24:00:00
+#SBATCH --time=36:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=8G
 #SBATCH --array=1-600
