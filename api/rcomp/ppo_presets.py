@@ -32,12 +32,24 @@ Inspect what a run would use with ``python -m rcomp list-presets [--env-id X]``.
 
 FOUR THINGS TO KNOW BEFORE RELYING ON A PRESET
 ----------------------------------------------
-1. ``reference`` is NOT applied. It records the source's ``n_envs``,
+1. ``reference`` is NOT applied, and ON HOPPER THAT BROKE THE RUN (measured
+   2026-08-10, ``logs/e0t_hopper_*``). It records the source's ``n_envs``,
    ``n_timesteps`` and ``normalize`` so job scripts can match the recipe
    deliberately. Most sources use ``n_envs: 1``; this project uses 8, which
-   makes each update 8x larger than the source intended. That is defensible
-   here because B-Pref's PrefPPO also runs 8-32 parallel envs, but it does mean
-   a preset is not a byte-exact reproduction of the cited score.
+   makes each update 8x larger and 8x rarer than the source intended.
+
+   Hopper at ``n_envs=8`` with this preset gets 488 updates over 2M steps
+   instead of the source's ~3,900, at lr 9.8e-5 (a tenth of stock) with
+   ``log_std_init=-2`` and ``gamma 0.999``. Every seed locked onto the
+   survive-only local optimum within 0.2M steps and never left: final 1011 vs
+   2073 for stock SB3 at the same budget (p=0.014), episode length 1000.0,
+   total ``reward_forward`` 1.0. The agent stands still for the full episode.
+
+   So: **pass ``--n-envs 1`` alongside ``--tuned-hyperparams`` for any preset
+   whose ``reference`` says ``n_envs: 1``**, unless you have checked that the
+   larger batch still works for that env. DummyVecEnv steps serially, so
+   ``n_envs`` is close to wall-clock neutral. Walker2d survived the mismatch
+   (4986 vs 3038 at 2M, +1949) but is the exception, not the rule.
 2. Learning-rate / clip-range *schedules* (``lin_*`` in the zoo) are unsafe in
    preference modes. ``trainer.train_policy_round`` calls ``learn()`` once per
    RLHF round with ``reset_num_timesteps=False``, so SB3 recomputes
