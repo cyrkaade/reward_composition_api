@@ -43,6 +43,16 @@ add(("ll",), ("tanh_naive", "tanh_feedback"), (350,))
 # unbounded partner to be paired against. 40
 add(("ll", "pusher"), ("fb_al",), (175, 350))
 
+# E8 hyperparameter control. The whole grid runs the STOCK PPO config, because
+# that is what the ~1,500 archived LunarLander runs use and what the collapse
+# numbers are measured on. This cell re-runs the three-arm collapse comparison
+# with rl-zoo's tuned LunarLander block (--tuned-hyperparams changes gamma
+# 0.99->0.999, n_steps 2048->1024, n_epochs 10->4, gae_lambda 0.95->0.98,
+# ent_coef 0->0.01) so "the collapse is a hyperparameter artifact" can be
+# answered with data instead of an argument. Pusher is excluded: its preset is
+# tuned=False, so the flag is a verified no-op there (0 differing keys). 30
+add(("ll",), ("tuned_true", "tuned_feedback", "tuned_naive"), (350,))
+
 out = Path(__file__).with_name("params_pre2.txt")
 out.write_text("\n".join(lines) + "\n", encoding="utf-8")
 print(f"wrote {out} with {len(lines)} lines")

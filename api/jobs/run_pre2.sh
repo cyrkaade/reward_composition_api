@@ -5,7 +5,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=8G
-#SBATCH --array=1-520
+#SBATCH --array=1-550
 #SBATCH --requeue
 
 # Does pretraining + active learning actually augment naive, once the three
@@ -79,6 +79,7 @@ PRE=""
 AL="--active-learning"
 ENSEMBLE=""
 TANH=""
+TUNED=""
 
 # --pretrain-holdout is ON for every pretraining arm except bt_leak, which is
 # the deliberate control for the leak.
@@ -120,6 +121,16 @@ case "$VARIANT" in
   # --- vanilla RLHF reference at the new bottom rung ------------------------
   fb_al)        MODE="feedback"; PARTIAL_ARGS="" ;;
 
+  # --- E8: hyperparameter control ------------------------------------------
+  # Everything above runs the STOCK PPO config, because that is what the ~1,500
+  # archived LunarLander runs use. These three re-run the collapse comparison
+  # under rl-zoo's tuned LunarLander block so "your collapse is just an untuned
+  # PPO artifact" is answerable with data. No lin_* schedule in that preset, so
+  # the sawtooth trap in resolve_ppo_preset does not apply.
+  tuned_true)     MODE="true";     PARTIAL_ARGS=""; TUNED="--tuned-hyperparams" ;;
+  tuned_feedback) MODE="feedback"; PARTIAL_ARGS=""; TUNED="--tuned-hyperparams" ;;
+  tuned_naive)    TUNED="--tuned-hyperparams" ;;
+
   *) echo "unknown variant: $VARIANT" >&2; exit 1 ;;
 esac
 
@@ -142,7 +153,7 @@ fi
 srun python -m rcomp train \
   --suite "$SUITE" --env-id "$ENV" --partial "$PARTIAL" \
   --mode "$MODE" $PARTIAL_ARGS \
-  $PRE $AL $ENSEMBLE $TANH $EXTRA \
+  $PRE $AL $ENSEMBLE $TANH $TUNED $EXTRA \
   --final-policy last \
   --reward-model-diagnostics --query-fisher-diagnostic \
   --query-budget "$BUDGET" --rlhf-rounds 5 \

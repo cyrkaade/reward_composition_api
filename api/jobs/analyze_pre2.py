@@ -30,7 +30,7 @@ import numpy as np
 
 CHANCE_BT = math.log(2.0)
 POSITIVE_SCALE = {"lunarlander"}  # envs where a drawdown ratio makes sense
-EXPECTED_RUNS = 520               # keep in sync with jobs/make_params_pre2.py
+EXPECTED_RUNS = 550               # keep in sync with jobs/make_params_pre2.py
 
 
 # --------------------------------------------------------------------------- io
@@ -326,6 +326,28 @@ def e7(runs):
     print("   mechanism claim survives the standard bounded model and gets much stronger.")
 
 
+def e8(runs):
+    print("\n" + "=" * 100)
+    print("E8  HYPERPARAMETER CONTROL: is the collapse an artifact of the untuned PPO config?")
+    print("=" * 100)
+    print("   The whole grid runs stock PPO, matching the ~1,500 archived LunarLander runs.")
+    print("   These three arms re-run the collapse comparison under rl-zoo's tuned LunarLander")
+    print("   block (gamma 0.99->0.999, n_steps 2048->1024, n_epochs 10->4, gae_lambda")
+    print("   0.95->0.98, ent_coef 0->0.01). Pusher is absent because the flag is a verified")
+    print("   no-op there: its preset is tuned=False, 0 differing keys.")
+    print("\n-- collapse under each config (LunarLander, q=350) --")
+    drawdown_table(runs, ("fb_al", "tuned_feedback", "none_al", "tuned_naive", "tuned_true"), budget=350)
+    print("\n   READ: the claim needs the TRUE arm stable and FEEDBACK collapsing under BOTH")
+    print("   configs. If tuned_true is stable and tuned_feedback still collapses while")
+    print("   tuned_naive does not, the mechanism is not a hyperparameter artifact and the")
+    print("   'why didn't you tune PPO' review comment is answered with data.")
+    print("   If tuned_true itself collapses, LunarLander joins Hopper as contaminated under")
+    print("   that config - report the stock numbers and say why.")
+    report("-- policy: tuned naive minus tuned feedback (the M1 gap under the tuned config) --",
+           paired(runs, "tuned_naive", "tuned_feedback", budgets=[350]),
+           note="compare with fb_al vs none_al above; the gap should survive, not necessarily match.")
+
+
 def verdict(runs):
     print("\n" + "=" * 100)
     print("SUMMARY")
@@ -369,7 +391,7 @@ def main() -> int:
         return 1
 
     coverage(runs)
-    stages = {"E1": e1, "E2": e2, "E3": e3, "E4": e4, "E5": e5, "E6": e6, "E7": e7}
+    stages = {"E1": e1, "E2": e2, "E3": e3, "E4": e4, "E5": e5, "E6": e6, "E7": e7, "E8": e8}
     for name, fn in stages.items():
         if args.only is None or name in args.only:
             fn(runs)
