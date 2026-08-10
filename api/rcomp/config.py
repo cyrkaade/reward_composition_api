@@ -31,6 +31,7 @@ DEVICES = ("auto", "cpu", "cuda")
 PRETRAIN_TARGETS = ("partial", "residual", "true")
 PRETRAIN_LOSSES = ("mse", "bt")
 ACTIVE_QUERY_STRATEGIES = ("auto", "dropout", "ensemble")
+ACTIVE_CANDIDATE_PROTOCOLS = ("matching", "pool")
 ROUND0_DATA_PROTOCOLS = ("legacy", "separate", "overlap")
 REWARD_MODEL_LOSS_REDUCTIONS = ("sum", "mean")
 ENSEMBLE_TRAINING_MODES = ("kfold", "full")
@@ -79,7 +80,9 @@ class ExperimentConfig:
     active_query_strategy: str = _f("auto", "Active learning strategy", choices=ACTIVE_QUERY_STRATEGIES)
     dropout_samples: int = _f(8, "MC-dropout samples for active learning")
     dropout_p: float = _f(0.25, "MC-dropout probability")
-    active_learning_batches: int = _f(512, "Candidate batches scored during active learning")
+    active_learning_batches: int = _f(512, "Candidate batches scored during active learning (matching protocol only)")
+    active_candidate_protocol: str = _f("matching", "How active learning builds its candidate set: 'matching' scores whole perfect matchings and keeps the best (legacy); 'pool' draws an independent pool of pool-multiplier x query_count pairs and keeps the per-pair top-k, as B-Pref does", choices=ACTIVE_CANDIDATE_PROTOCOLS)
+    active_pool_multiplier: int = _f(10, "Candidate pool size as a multiple of the round's query count (pool protocol only); B-Pref uses 10")
     dedicated_query_rng: bool = _f(
         False,
         "Use a deterministic per-round Python RNG for query pairing/candidate matchings so reward-training and pretraining shuffles cannot change which pairs are considered",
@@ -359,6 +362,10 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("reward_model_ensemble_size must be greater than zero")
     if config.active_query_strategy not in ACTIVE_QUERY_STRATEGIES:
         raise ConfigError(f"Unsupported active_query_strategy '{config.active_query_strategy}'")
+    if config.active_candidate_protocol not in ACTIVE_CANDIDATE_PROTOCOLS:
+        raise ConfigError(f"Unsupported active_candidate_protocol '{config.active_candidate_protocol}'. Supported: {', '.join(ACTIVE_CANDIDATE_PROTOCOLS)}")
+    if config.active_pool_multiplier <= 0:
+        raise ConfigError("active_pool_multiplier must be greater than zero")
     if config.device not in DEVICES:
         raise ConfigError(f"Unsupported device '{config.device}'. Supported devices: {', '.join(DEVICES)}")
     if config.final_policy not in FINAL_POLICIES:

@@ -350,6 +350,8 @@ class RlhfTrainer:
             dropout_p=config.dropout_p,
             active_learning_batches=config.active_learning_batches,
             active_query_strategy=config.active_query_strategy,
+            candidate_protocol=config.active_candidate_protocol,
+            pool_multiplier=config.active_pool_multiplier,
             transform_partial=self.runtime.composed_partial_reward,
             rng=query_rng,
         )
@@ -889,6 +891,8 @@ class ExperimentRunner:
             "fragment_length": config.fragment_length if is_preference else None,
             "active_learning": config.active_learning if is_preference else None,
             "active_query_strategy": config.active_query_strategy if is_preference else None,
+            "active_candidate_protocol": config.active_candidate_protocol if is_preference else None,
+            "active_pool_multiplier": config.active_pool_multiplier if is_preference else None,
             "dedicated_query_rng": config.dedicated_query_rng if is_preference else None,
             "reward_hidden_sizes": list(config.reward_hidden_sizes),
             "reward_model_lr": config.reward_model_lr if is_preference else None,

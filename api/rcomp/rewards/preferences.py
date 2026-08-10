@@ -131,6 +131,8 @@ def dropout_active_learning_pairs(
     n_batches: int,
     transform_partial: Callable[[float], float] | None = None,
     rng: random.Random | None = None,
+    candidate_protocol: str = "matching",
+    pool_multiplier: int = 10,
 ) -> list[tuple[Trajectory, Trajectory]]:
     if len(fragments) < 2:
         return []
@@ -147,6 +149,12 @@ def dropout_active_learning_pairs(
                 returns = [model_return + partial for model_return, partial in zip(returns, partial_returns)]
             pred_returns.append(returns)
 
+    return _select_pairs(fragments, pred_returns, query_count, n_batches, rng, candidate_protocol, pool_multiplier)
+
+
+def _select_pairs(fragments, pred_returns, query_count, n_batches, rng, candidate_protocol, pool_multiplier):
+    if candidate_protocol == "pool":
+        return _candidate_pool_pairs(fragments, pred_returns, query_count, pool_multiplier, rng=rng)
     return _preference_variance_pairs(fragments, pred_returns, query_count, n_batches, rng=rng)
 
 
@@ -159,6 +167,8 @@ def ensemble_active_learning_pairs(
     n_batches: int,
     transform_partial: Callable[[float], float] | None = None,
     rng: random.Random | None = None,
+    candidate_protocol: str = "matching",
+    pool_multiplier: int = 10,
 ) -> list[tuple[Trajectory, Trajectory]]:
     if len(fragments) < 2 or not reward_models:
         return []
@@ -174,12 +184,69 @@ def ensemble_active_learning_pairs(
                 returns = [model_return + partial for model_return, partial in zip(returns, partial_returns)]
             pred_returns.append(returns)
 
-    return _preference_variance_pairs(fragments, pred_returns, query_count, n_batches, rng=rng)
+    return _select_pairs(fragments, pred_returns, query_count, n_batches, rng, candidate_protocol, pool_multiplier)
 
 
 def _partial_fragment_returns(fragments: list[Trajectory], transform_partial: Callable[[float], float] | None) -> list[float]:
     transform = transform_partial or (lambda value: value)
     return [sum(transform(state["partial_rew"]) for state in fragment.states) for fragment in fragments]
+
+
+def _pair_disagreement(pred_returns: list[list[float]], pairs: list[tuple[int, int]]) -> np.ndarray:
+    """Ensemble variance of the predicted preference probability, per candidate pair."""
+    scores = th.as_tensor(
+        [[(pred_returns[m][i], pred_returns[m][j]) for i, j in pairs] for m in range(len(pred_returns))],
+        dtype=th.float32,
+    )
+    return th.sum(th.var(preference_prob(scores, 2), dim=0), dim=1).detach().cpu().numpy()
+
+
+def _candidate_pool_pairs(
+    fragments: list[Trajectory],
+    pred_returns: list[list[float]],
+    query_count: int,
+    pool_multiplier: int,
+    rng: random.Random | None = None,
+) -> list[tuple[Trajectory, Trajectory]]:
+    """B-Pref's disagreement sampling: draw an INDEPENDENT candidate pool of
+    ``pool_multiplier * query_count`` pairs, score each one, and keep the top-k.
+
+    The alternative in ``_preference_variance_pairs`` scores whole perfect
+    matchings and keeps the best one, which is a different estimator: a fragment
+    can appear in at most one pair per matching, so the selected set is
+    constrained by a global matching rather than by per-pair informativeness, and
+    the "best of N matchings" step optimizes the SUM over a matching instead of
+    picking the individually most informative queries. B-Pref (Appendix C) states
+    it generates an initial batch of N_inter pairs uniformly at random and then
+    selects the N_query pairs with high uncertainty, which is what this does.
+    """
+    n = len(fragments)
+    if n < 2 or query_count <= 0:
+        return []
+    picker = rng if rng is not None else random
+    wanted = max(query_count * max(pool_multiplier, 1), query_count)
+
+    seen: set[tuple[int, int]] = set()
+    pool: list[tuple[int, int]] = []
+    # cap the attempts so a tiny fragment set cannot spin: with n fragments there
+    # are only n*(n-1)/2 distinct unordered pairs to find.
+    for _ in range(wanted * 10):
+        if len(pool) >= wanted:
+            break
+        i, j = picker.randrange(n), picker.randrange(n)
+        if i == j:
+            continue
+        key = (i, j) if i < j else (j, i)
+        if key in seen:
+            continue
+        seen.add(key)
+        pool.append((i, j))
+    if not pool:
+        return random_query_pairs(fragments, query_count, rng=rng)
+
+    variances = _pair_disagreement(pred_returns, pool)
+    ranked = sorted(zip(pool, variances), key=lambda item: item[1], reverse=True)
+    return [(fragments[i], fragments[j]) for (i, j), _ in ranked[:query_count]]
 
 
 def _preference_variance_pairs(
@@ -235,6 +302,8 @@ def choose_query_pairs(
     active_query_strategy: str = "auto",
     transform_partial: Callable[[float], float] | None = None,
     rng: random.Random | None = None,
+    candidate_protocol: str = "matching",
+    pool_multiplier: int = 10,
 ) -> list[tuple[Trajectory, Trajectory]]:
     fragments = fragment_trajectories(trajectories, fragment_length)
     if len(fragments) < 2 or query_count <= 0:
@@ -255,6 +324,8 @@ def choose_query_pairs(
             active_learning_batches,
             transform_partial,
             rng,
+            candidate_protocol,
+            pool_multiplier,
         )
 
     return dropout_active_learning_pairs(
@@ -268,6 +339,8 @@ def choose_query_pairs(
         active_learning_batches,
         transform_partial,
         rng,
+        candidate_protocol,
+        pool_multiplier,
     )
 
 
