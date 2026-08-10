@@ -8,6 +8,12 @@
 #SBATCH --array=1-1000
 #SBATCH --requeue
 
+# SUPERSEDED by the staged pre3 design.  This 1,000-run grid mixes the reward
+# architecture/bounding decision with the pretraining and active-learning
+# questions, uses the legacy round-0 split, and gives each ensemble member only
+# a fold of the labels.  Keep it for provenance, but require an explicit escape
+# hatch so an old command cannot spend 1,000 runs accidentally.
+
 # Does pretraining + active learning actually augment naive, once the three
 # implementation defects found on 2026-08-10 are removed - measured on four
 # environments with the literature-tuned PPO config throughout?
@@ -77,6 +83,12 @@
 # the AL factor, and n=80 per env across the ladder.
 
 set -euo pipefail
+
+if [ "${ALLOW_SUPERSEDED_PRE2:-0}" != "1" ]; then
+  echo "jobs/run_pre2.sh is superseded; run jobs/run_pre3_gate.sh first" >&2
+  echo "Set ALLOW_SUPERSEDED_PRE2=1 only to reproduce the historical pre2 design." >&2
+  exit 2
+fi
 
 module load mamba
 source activate /scratch/work/akishea1/envs/rcomp

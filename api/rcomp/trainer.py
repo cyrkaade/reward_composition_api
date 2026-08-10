@@ -31,6 +31,7 @@ from .partials import include_partial_feature, resolve_custom_partial
 from .rewards.model import RewardModel
 from .rewards.preferences import (
     choose_query_pairs,
+    fragment_trajectories,
     gate_partial_error_stats,
     gate_statistics,
     query_fisher_information,
@@ -88,6 +89,12 @@ def policy_training_schedule(total_timesteps: int, rounds: int, timesteps_per_ro
     ]
 
 
+def trajectory_collection_seed(seed: int, round_index: int, stream_index: int) -> int:
+    """Keep the historical stream-0 seed and put stream B far outside the
+    consecutive per-vector-env seed range used by Stable-Baselines3."""
+    return seed * 1000 + round_index * 100 + stream_index * 10_000_000
+
+
 def learn_policy(
     model,
     total_timesteps: int,
@@ -119,7 +126,7 @@ class RlhfTrainer:
         callbacks,
         reward_model: RewardModel | list[RewardModel],
         convert_traj: Callable[[Trajectory], list[list[float]]],
-        collect_trajectories: Callable[[int, int], list[Trajectory]],
+        collect_trajectories: Callable[[int, int, int], list[Trajectory]],
         collection_label: str,
     ):
         self.config = config
@@ -168,19 +175,21 @@ class RlhfTrainer:
 
     def run_round(self, round_index: int, round_query_budget: int) -> None:
         config = self.config
-        collection_steps = config.collection_timesteps * (2 if round_index == 0 else 1)
-        print(
-            f"\nPreference round {round_index}: "
-            f"collecting {collection_steps} {self.collection_label} for {round_query_budget} queries"
-        )
+        if round_index == 0 and config.round0_data_protocol != "legacy":
+            collection_description = (
+                f"two independently seeded sets of {config.collection_timesteps} {self.collection_label} "
+                f"({config.round0_data_protocol} protocol)"
+            )
+        else:
+            collection_steps = config.collection_timesteps * (2 if round_index == 0 else 1)
+            collection_description = f"{collection_steps} {self.collection_label}"
+        print(f"\nPreference round {round_index}: collecting {collection_description} for {round_query_budget} queries")
         if round_query_budget <= 0 and not self._needs_pretraining():
             print("skipping preference collection because no queries are scheduled")
             self.train_policy_round(round_index)
             return
 
-        trajectories = self.collect_trajectories(round_index, collection_steps)
-        self.update_partial_stats(trajectories)
-        pretrain_trajectories, query_trajectories = self.split_for_pretraining(trajectories)
+        pretrain_trajectories, query_trajectories = self.collect_round_data(round_index)
         self.maybe_pretrain_reward_model(pretrain_trajectories)
         self.add_query_pairs(query_trajectories, round_query_budget)
         self.maybe_train_reward_model()
@@ -190,6 +199,56 @@ class RlhfTrainer:
 
     def _needs_pretraining(self) -> bool:
         return bool(self.config.pretrain_reward_model and not self.pretraining_done)
+
+    def collect_round_data(self, round_index: int) -> tuple[list[Trajectory], list[Trajectory]]:
+        """Collect the pretraining and query pools for one feedback round.
+
+        ``legacy`` preserves the historical behavior exactly: round 0 is one
+        doubled rollout and ``pretrain_holdout`` optionally takes its ordered
+        first/second halves.  The opt-in protocols collect two equal-size sets
+        with distinct deterministic seed streams before any pretraining occurs:
+
+        - ``separate`` pretrains on set A and queries set B;
+        - ``overlap`` pretrains and queries set A, while still collecting set B
+          so the leak control uses the same environment-interaction budget.
+
+        Scratch controls using ``separate`` query the same stream-B pool, with
+        the same number of candidate trajectories, as pretrained arms.  Because
+        A and B come from separate resets/seeds, neither protocol depends on the
+        completion-order layout returned by ``BufferingWrapper``.
+        """
+        config = self.config
+        if round_index == 0 and config.round0_data_protocol != "legacy":
+            set_a = self.collect_trajectories(round_index, config.collection_timesteps, 0)
+            set_b = self.collect_trajectories(round_index, config.collection_timesteps, 1)
+            self.update_partial_stats([*set_a, *set_b])
+            # Equal collection steps do not guarantee equal query capacity when
+            # episode boundaries discard fragment remainders. Materializing full
+            # fragments and trimming both streams to the smaller count gives the
+            # scratch, disjoint, and overlap arms exactly equal candidate-pool
+            # sizes. Feeding these fixed-length fragments back through
+            # fragment_trajectories later is idempotent.
+            fragments_a = fragment_trajectories(set_a, config.fragment_length)
+            fragments_b = fragment_trajectories(set_b, config.fragment_length)
+            matched_fragments = min(len(fragments_a), len(fragments_b))
+            pretrain_trajectories = fragments_a[:matched_fragments]
+            separate_query_trajectories = fragments_b[:matched_fragments]
+            query_trajectories = (
+                pretrain_trajectories
+                if config.round0_data_protocol == "overlap"
+                else separate_query_trajectories
+            )
+            print(
+                f"round-0 data: matched {matched_fragments} full fragments per stream; "
+                f"query set {'A (overlap)' if config.round0_data_protocol == 'overlap' else 'B (separate)'} "
+                f"has {len(query_trajectories)} fragments"
+            )
+            return pretrain_trajectories, query_trajectories
+
+        collection_steps = config.collection_timesteps * (2 if round_index == 0 else 1)
+        trajectories = self.collect_trajectories(round_index, collection_steps, 0)
+        self.update_partial_stats(trajectories)
+        return self.split_for_pretraining(trajectories)
 
     def split_for_pretraining(self, trajectories: list[Trajectory]) -> tuple[list[Trajectory], list[Trajectory]]:
         """Keep pretraining and round-0 query collection on disjoint rollouts.
@@ -245,6 +304,15 @@ class RlhfTrainer:
                         fragment_length=config.fragment_length,
                         max_pairs=config.pretrain_pairs,
                         patience=config.pretrain_patience,
+                        temperature=config.pretrain_bt_temperature,
+                        tie_margin=config.pretrain_bt_tie_margin,
+                        loss_reduction=(
+                            config.reward_model_loss_reduction
+                            if config.pretrain_bt_match_reward_training
+                            else "sum"
+                        ),
+                        weight_l1=(config.reward_model_l1 if config.pretrain_bt_match_reward_training else 0.0),
+                        output_l1=(config.reward_output_l1 if config.pretrain_bt_match_reward_training else 0.0),
                     )
                     if stats and self.runtime.pretrain_stats is None:
                         self.runtime.pretrain_stats = stats
@@ -341,6 +409,10 @@ class RlhfTrainer:
                     epochs=config.reward_model_epochs,
                     patience=config.reward_model_patience,
                     learning_rate=config.reward_model_lr,
+                    loss_reduction=config.reward_model_loss_reduction,
+                    weight_l1=config.reward_model_l1,
+                    output_l1=config.reward_output_l1,
+                    training_mode=config.ensemble_training,
                     partial_mean=self.runtime.partial_mean,
                     partial_std=self.runtime.partial_std,
                     partial_alpha=config.partial_alpha,
@@ -365,6 +437,9 @@ class RlhfTrainer:
                     epochs=config.reward_model_epochs,
                     patience=config.reward_model_patience,
                     learning_rate=config.reward_model_lr,
+                    loss_reduction=config.reward_model_loss_reduction,
+                    weight_l1=config.reward_model_l1,
+                    output_l1=config.reward_output_l1,
                     partial_mean=self.runtime.partial_mean,
                     partial_std=self.runtime.partial_std,
                     partial_alpha=config.partial_alpha,
@@ -415,7 +490,7 @@ class RlhfTrainer:
 
             # M2: how much does the trained model rely on the partial input feature?
             # Measured by ablating it, not by comparing weight magnitudes.
-            if config.reward_model_diagnostics and self.rated_val:
+            if config.reward_model_diagnostics and self.rated_val and config.ensemble_training != "full":
                 self.runtime.rm_diagnostics = reward_model_diagnostics(
                     self.reward_models,
                     self.rated_val,
@@ -431,6 +506,11 @@ class RlhfTrainer:
                         f"with the partial feature ablated acc={d['accuracy_partial_ablated']:.3f} "
                         f"(drop={d['accuracy_drop_when_ablated']:+.3f} = reliance on the partial feature)"
                     )
+            elif config.reward_model_diagnostics and self.rated_val:
+                print(
+                    "skipping post-training reward-model diagnostics: ensemble_training=full "
+                    "trained on every queried pair, so rated_val is not held out"
+                )
 
     def train_policy_round(self, round_index: int) -> None:
         config = self.config
@@ -626,9 +706,9 @@ class ExperimentRunner:
             callbacks,
             reward_model,
             convert_traj,
-            lambda round_index, collection_steps: TrajectoryCollector(vec_env=train_env, agent=model).rollout_trajectories(
+            lambda round_index, collection_steps, stream_index: TrajectoryCollector(vec_env=train_env, agent=model).rollout_trajectories(
                 total_timesteps=collection_steps,
-                seed=config.seed * 1000 + round_index * 100,
+                seed=trajectory_collection_seed(config.seed, round_index, stream_index),
             ),
             collection_label=self.suite.collection_label,
         ).run()
@@ -781,11 +861,24 @@ class ExperimentRunner:
             "active_query_strategy": config.active_query_strategy if is_preference else None,
             "reward_hidden_sizes": list(config.reward_hidden_sizes),
             "reward_model_lr": config.reward_model_lr if is_preference else None,
+            "reward_model_loss_reduction": config.reward_model_loss_reduction if is_preference else None,
+            "reward_model_l1": config.reward_model_l1 if is_preference else None,
+            "reward_output_l1": config.reward_output_l1 if is_preference else None,
+            "ensemble_training": config.ensemble_training if is_preference else None,
             "reward_model_ensemble_size": config.reward_model_ensemble_size if is_preference else None,
             "pretrain_reward_model": config.pretrain_reward_model if is_preference else None,
             "pretrain_target": config.pretrain_target if config.pretrain_reward_model else None,
             "pretrain_loss": config.pretrain_loss if config.pretrain_reward_model else None,
             "pretrain_holdout": config.pretrain_holdout if config.pretrain_reward_model else None,
+            "round0_data_protocol": config.round0_data_protocol if is_preference else None,
+            "pretrain_pairs": config.pretrain_pairs if config.pretrain_reward_model and config.pretrain_loss == "bt" else None,
+            "pretrain_bt_temperature": config.pretrain_bt_temperature if config.pretrain_reward_model and config.pretrain_loss == "bt" else None,
+            "pretrain_bt_tie_margin": config.pretrain_bt_tie_margin if config.pretrain_reward_model and config.pretrain_loss == "bt" else None,
+            "pretrain_bt_match_reward_training": (
+                config.pretrain_bt_match_reward_training
+                if config.pretrain_reward_model and config.pretrain_loss == "bt"
+                else None
+            ),
             "tanh_model_reward": config.tanh_model_reward if is_preference else None,
             "include_partial_feature": include_partial_feature(config) if is_preference else None,
             "normalize_partial_reward": config.normalize_partial_reward if is_preference else None,

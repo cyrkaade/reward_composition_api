@@ -17,6 +17,7 @@ from rcomp.rewards.preferences import (
     rate_pairs_from_true_reward,
     reward_model_io_stats,
     split_preference_k_folds,
+    train_preference_reward_ensemble,
     train_preference_reward_model,
 )
 from rcomp.trainer import policy_training_schedule, query_schedule
@@ -170,6 +171,59 @@ def test_train_preference_reward_model_pairwise_and_delta():
 
         output = model(th.zeros((1, FEATURE_DIM)))
         assert th.isfinite(output).all()
+
+
+def test_standard_reward_training_options_are_supported():
+    th.manual_seed(0)
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,))
+    pairs = make_rated_pairs(6)
+
+    train_preference_reward_model(
+        model,
+        pairs,
+        [],
+        convert_traj=convert_traj,
+        use_delta_loss=False,
+        batch_size=2,
+        epochs=2,
+        patience=1,
+        loss_reduction="mean",
+        weight_l1=0.0,
+        output_l1=0.0,
+    )
+
+    assert th.isfinite(model(th.zeros((1, FEATURE_DIM)))).all()
+
+
+def test_full_ensemble_training_uses_all_pairs_for_every_member(monkeypatch):
+    pairs = make_rated_pairs(7)
+    models = [RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,)) for _ in range(3)]
+    calls = []
+
+    def record_training(model, train_pairs, val_pairs, **kwargs):
+        calls.append((model, list(train_pairs), list(val_pairs), kwargs))
+
+    monkeypatch.setattr("rcomp.rewards.preferences.train_preference_reward_model", record_training)
+    train_preference_reward_ensemble(
+        models,
+        pairs,
+        convert_traj=convert_traj,
+        use_delta_loss=False,
+        batch_size=2,
+        epochs=2,
+        patience=1,
+        loss_reduction="mean",
+        weight_l1=0.0,
+        output_l1=0.0,
+        training_mode="full",
+    )
+
+    assert len(calls) == 3
+    assert all(train_pairs == pairs and val_pairs == [] for _, train_pairs, val_pairs, _ in calls)
+    assert all(call_kwargs["loss_reduction"] == "mean" for *_, call_kwargs in calls)
+    assert all(call_kwargs["weight_l1"] == 0.0 for *_, call_kwargs in calls)
+    assert all(call_kwargs["output_l1"] == 0.0 for *_, call_kwargs in calls)
+    assert all(call_kwargs["fixed_epochs_without_validation"] is True for *_, call_kwargs in calls)
 
 
 def test_partial_reward_tensor_normalization():
