@@ -101,6 +101,28 @@ def test_validation_errors():
         normalize_experiment_config(ExperimentConfig(suite="mujoco", mode="true", preset="bogus"))
     with pytest.raises(ConfigError, match="reward_hidden_sizes"):
         normalize_experiment_config(ExperimentConfig(suite="gym", mode="true", reward_hidden_sizes=(0,)))
+    for threshold in (-0.01, 1.01):
+        with pytest.raises(ConfigError, match="reward_model_train_accuracy_stop"):
+            normalize_experiment_config(
+                ExperimentConfig(suite="gym", mode="feedback", reward_model_train_accuracy_stop=threshold)
+            )
+
+
+def test_reward_model_train_accuracy_stop_is_opt_in_and_accepts_bpref_threshold():
+    default = normalize_experiment_config(ExperimentConfig(suite="gym", mode="feedback"))
+    configured = normalize_experiment_config(
+        ExperimentConfig(
+            suite="gym",
+            mode="feedback",
+            reward_model_train_accuracy_stop=0.97,
+            dedicated_query_rng=True,
+        )
+    )
+
+    assert default.reward_model_train_accuracy_stop is None
+    assert default.dedicated_query_rng is False
+    assert configured.reward_model_train_accuracy_stop == 0.97
+    assert configured.dedicated_query_rng is True
 
 
 def test_suite_default_envs():
@@ -117,3 +139,8 @@ def test_sweep_normalization_requires_partial():
     assert config.manifest == Path("some/dir") / "manifest.jsonl"
     assert config.collection_timesteps == 2000
     assert config.fragment_length == 1
+
+    with pytest.raises(ConfigError, match="reward_model_train_accuracy_stop"):
+        normalize_sweep_config(
+            SweepConfig(suite="gym", partial="example_cartpole", reward_model_train_accuracy_stop=1.1)
+        )

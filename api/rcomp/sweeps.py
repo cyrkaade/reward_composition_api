@@ -221,6 +221,10 @@ def build_command(config: SweepConfig, env_id: str, seed: int, variant: Variant)
         command.extend(["--preset", str(config.preset)])
     if config.tuned_hyperparams:
         command.append("--tuned-hyperparams")
+    if config.reward_model_train_accuracy_stop is not None:
+        command.extend(["--reward-model-train-accuracy-stop", str(config.reward_model_train_accuracy_stop)])
+    if config.dedicated_query_rng:
+        command.append("--dedicated-query-rng")
     if config.partial:
         command.extend(["--partial", config.partial])
     if config.progress_bar:

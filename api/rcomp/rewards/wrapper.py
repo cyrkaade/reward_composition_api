@@ -53,6 +53,7 @@ class LearnedRewardRuntime:
     gate_error_stats: dict | None = None
     rm_diagnostics: dict | None = None
     rm_diagnostics_before: dict | None = None
+    reward_model_training: list = field(default_factory=list)
     query_fisher: list = field(default_factory=list)
     pretrain_stats: dict | None = None
     target_mean: float = 0.0

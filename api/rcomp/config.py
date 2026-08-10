@@ -80,6 +80,10 @@ class ExperimentConfig:
     dropout_samples: int = _f(8, "MC-dropout samples for active learning")
     dropout_p: float = _f(0.25, "MC-dropout probability")
     active_learning_batches: int = _f(512, "Candidate batches scored during active learning")
+    dedicated_query_rng: bool = _f(
+        False,
+        "Use a deterministic per-round Python RNG for query pairing/candidate matchings so reward-training and pretraining shuffles cannot change which pairs are considered",
+    )
 
     reward_hidden_sizes: tuple[int, ...] = _f((200,), "Reward model hidden sizes, e.g. '200' or '64,64'", parse="int_tuple")
     reward_model_lr: float = _f(0.01, "Reward model learning rate")
@@ -92,6 +96,10 @@ class ExperimentConfig:
     reward_output_l1: float = _f(0.001, "L1 penalty on per-state reward outputs (0 disables; historical default 0.001)")
     reward_model_epochs: int = _f(100, "Reward model training epochs")
     reward_model_patience: int = _f(10, "Early-stopping patience (epochs)")
+    reward_model_train_accuracy_stop: float | None = _f(
+        None,
+        "Stop each reward-model member after a full epoch when its mean training ranking accuracy is strictly above this threshold (0.97 gives a member-local B-Pref-inspired stop; 'none' disables)",
+    )
     reward_model_batch_size: int = _f(32, "Reward model batch size")
     reward_model_ensemble_size: int = _f(1, "Reward model ensemble size (1 = single model)")
     ensemble_training: str = _f(
@@ -174,10 +182,18 @@ class SweepConfig:
     fragment_length: int | None = _f(None, "Preference fragment length (suite default when omitted)")
     reward_model_epochs: int = _f(100, "Reward model training epochs")
     reward_model_patience: int = _f(10, "Early-stopping patience (epochs)")
+    reward_model_train_accuracy_stop: float | None = _f(
+        None,
+        "Stop each reward-model member after a full epoch when its mean training ranking accuracy is strictly above this threshold (0.97 gives a member-local B-Pref-inspired stop; 'none' disables)",
+    )
     reward_model_batch_size: int = _f(32, "Reward model batch size")
     reward_model_ensemble_size: int = _f(1, "Reward model ensemble size (1 = single model)")
     active_query_strategy: str = _f("auto", "Active learning strategy", choices=ACTIVE_QUERY_STRATEGIES)
     active_learning_batches: int = _f(512, "Candidate batches scored during active learning")
+    dedicated_query_rng: bool = _f(
+        False,
+        "Use a deterministic per-round Python RNG for query pairing/candidate matchings so reward-training and pretraining shuffles cannot change which pairs are considered",
+    )
     pretrain_epochs: int = _f(25, "Pretraining epochs")
     pretrain_batch_size: int = _f(256, "Pretraining batch size")
     pretrain_lr: float = _f(1e-3, "Pretraining learning rate")
@@ -330,6 +346,8 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("reward_model_l1 must be non-negative")
     if config.reward_output_l1 < 0:
         raise ConfigError("reward_output_l1 must be non-negative")
+    if config.reward_model_train_accuracy_stop is not None and not 0.0 <= config.reward_model_train_accuracy_stop <= 1.0:
+        raise ConfigError("reward_model_train_accuracy_stop must be between 0 and 1")
     if config.ensemble_training not in ENSEMBLE_TRAINING_MODES:
         raise ConfigError(
             f"Unsupported ensemble_training '{config.ensemble_training}'. "
@@ -389,6 +407,8 @@ def _validate_sweep(config: SweepConfig) -> None:
         raise ConfigError(f"Unsupported device '{config.device}'")
     if config.reward_model_ensemble_size <= 0:
         raise ConfigError("reward_model_ensemble_size must be greater than zero")
+    if config.reward_model_train_accuracy_stop is not None and not 0.0 <= config.reward_model_train_accuracy_stop <= 1.0:
+        raise ConfigError("reward_model_train_accuracy_stop must be between 0 and 1")
     if config.active_query_strategy not in ACTIVE_QUERY_STRATEGIES:
         raise ConfigError(f"Unsupported active_query_strategy '{config.active_query_strategy}'")
     if spec.presets is not None and config.preset not in spec.presets:

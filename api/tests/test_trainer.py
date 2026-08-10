@@ -93,6 +93,20 @@ def test_smoke_all_modes(mode, tmp_path):
         assert metadata["synthetic_queries"] > 0
         assert metadata["reward_composition"] == mode
         assert metadata["query_budget"] == 10
+        assert metadata["reward_model_train_accuracy_stop"] is None
+        assert metadata["dedicated_query_rng"] is False
+        assert len(metadata["reward_model_training"]) == 2
+        assert all(round_stats["members"] for round_stats in metadata["reward_model_training"])
+        assert all(
+            round_stats["model_reward_output_mean"] is not None
+            and round_stats["model_reward_output_std"] is not None
+            for round_stats in metadata["reward_model_training"]
+        )
+        assert all(
+            0.0 <= member["final_train_accuracy"] <= 1.0
+            for round_stats in metadata["reward_model_training"]
+            for member in round_stats["members"]
+        )
     else:
         assert metadata["synthetic_queries"] == 0
         assert metadata["query_budget"] == 0

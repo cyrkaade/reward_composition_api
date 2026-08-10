@@ -76,6 +76,45 @@ def test_random_query_pairs_respects_count():
         assert t1 is not t2
 
 
+def test_dedicated_query_rng_is_independent_of_global_random_consumption():
+    trajectories = [make_trajectory(1, reward=float(index)) for index in range(12)]
+
+    expected = choose_query_pairs(
+        trajectories,
+        reward_model=None,
+        query_count=5,
+        fragment_length=1,
+        active_learning=False,
+        convert_traj=convert_traj,
+        add_partial_to_predictions=False,
+        dropout_samples=2,
+        dropout_p=0.25,
+        active_learning_batches=4,
+        rng=random.Random(12345),
+    )
+    random.seed(999)
+    for _ in range(10_000):
+        random.random()
+    actual = choose_query_pairs(
+        trajectories,
+        reward_model=None,
+        query_count=5,
+        fragment_length=1,
+        active_learning=False,
+        convert_traj=convert_traj,
+        add_partial_to_predictions=False,
+        dropout_samples=2,
+        dropout_p=0.25,
+        active_learning_batches=4,
+        rng=random.Random(12345),
+    )
+
+    def identities(pairs):
+        return [(pair[0].get_summed_reward(), pair[1].get_summed_reward()) for pair in pairs]
+
+    assert identities(actual) == identities(expected)
+
+
 def test_choose_query_pairs_random_when_no_model():
     random.seed(0)
     trajectories = [make_trajectory(4, reward=float(index)) for index in range(4)]
@@ -195,6 +234,64 @@ def test_standard_reward_training_options_are_supported():
     assert th.isfinite(model(th.zeros((1, FEATURE_DIM)))).all()
 
 
+def test_reward_training_stops_after_full_epoch_above_accuracy_threshold():
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=())
+    with th.no_grad():
+        model.head.weight.copy_(th.tensor([[1.0, 0.0, 0.0]]))
+        model.head.bias.zero_()
+
+    stats = train_preference_reward_model(
+        model,
+        make_rated_pairs(8),
+        [],
+        convert_traj=convert_traj,
+        use_delta_loss=False,
+        batch_size=2,
+        epochs=5,
+        patience=1,
+        learning_rate=0.0,
+        loss_reduction="mean",
+        weight_l1=0.0,
+        output_l1=0.0,
+        fixed_epochs_without_validation=True,
+        train_accuracy_stop=0.97,
+    )
+
+    assert stats["epochs_completed"] == 1
+    assert stats["last_epoch_train_loss"] is not None
+    assert stats["final_train_accuracy"] == 1.0
+    assert stats["train_accuracy_at_stop"] == 1.0
+    assert stats["stopped_by_train_accuracy"] is True
+    assert stats["stop_reason"] == "train_accuracy"
+
+
+def test_reward_training_accuracy_stop_is_strict():
+    model = RewardModel(input_size=FEATURE_DIM, hidden_sizes=())
+    with th.no_grad():
+        model.head.weight.copy_(th.tensor([[1.0, 0.0, 0.0]]))
+        model.head.bias.zero_()
+
+    stats = train_preference_reward_model(
+        model,
+        make_rated_pairs(4),
+        [],
+        convert_traj=convert_traj,
+        use_delta_loss=False,
+        batch_size=2,
+        epochs=3,
+        patience=1,
+        learning_rate=0.0,
+        fixed_epochs_without_validation=True,
+        train_accuracy_stop=1.0,
+    )
+
+    assert stats["epochs_completed"] == 3
+    assert stats["last_epoch_train_loss"] is not None
+    assert stats["final_train_accuracy"] == 1.0
+    assert stats["stopped_by_train_accuracy"] is False
+    assert stats["stop_reason"] == "max_epochs"
+
+
 def test_full_ensemble_training_uses_all_pairs_for_every_member(monkeypatch):
     pairs = make_rated_pairs(7)
     models = [RewardModel(input_size=FEATURE_DIM, hidden_sizes=(8,)) for _ in range(3)]
@@ -224,6 +321,34 @@ def test_full_ensemble_training_uses_all_pairs_for_every_member(monkeypatch):
     assert all(call_kwargs["weight_l1"] == 0.0 for *_, call_kwargs in calls)
     assert all(call_kwargs["output_l1"] == 0.0 for *_, call_kwargs in calls)
     assert all(call_kwargs["fixed_epochs_without_validation"] is True for *_, call_kwargs in calls)
+    assert all(call_kwargs["train_accuracy_stop"] is None for *_, call_kwargs in calls)
+
+
+def test_full_ensemble_accuracy_stop_reports_each_member_independently():
+    models = [RewardModel(input_size=FEATURE_DIM, hidden_sizes=()) for _ in range(2)]
+    for model in models:
+        with th.no_grad():
+            model.head.weight.copy_(th.tensor([[1.0, 0.0, 0.0]]))
+            model.head.bias.zero_()
+
+    stats = train_preference_reward_ensemble(
+        models,
+        make_rated_pairs(6),
+        convert_traj=convert_traj,
+        use_delta_loss=False,
+        batch_size=2,
+        epochs=4,
+        patience=1,
+        learning_rate=0.0,
+        training_mode="full",
+        train_accuracy_stop=0.97,
+    )
+
+    assert [member["member_index"] for member in stats] == [0, 1]
+    assert all(member["training_mode"] == "full" for member in stats)
+    assert all(member["epochs_completed"] == 1 for member in stats)
+    assert all(member["final_train_accuracy"] == 1.0 for member in stats)
+    assert all(member["stopped_by_train_accuracy"] is True for member in stats)
 
 
 def test_partial_reward_tensor_normalization():

@@ -12,12 +12,12 @@ any cell is short of 10 seeds or any preference run has other than 350/350
 synthetic queries.  LunarLander qualifies only when true beats partial on both
 median peak and median final.  Walker qualification comes from run_e0tuned.sh.
 
-Use the bounded model downstream.  As a go/no-go pilot heuristic, advance the
-collapse contrast only if bounded feedback has at least 3/10 >20% drawdowns,
-at least two more collapsed seeds than bounded naive, and a larger median
-drawdown.  This is not an inferential conclusion.  If both bounded modes have
-median final below half their respective unbounded medians, stop and diagnose
-reward scaling instead of launching the main grid.
+For LunarLander, report learning and retention separately: a run "learned" if
+its evaluation curve ever reaches the conventional solved threshold of 200,
+and it "lost solved" if its final evaluation is below 200.  A drawdown rate
+whose denominator silently omits runs that never learned can make a failing
+method look stable.  Signed returns also make ratio rules such as "below half"
+invalid, so this analyzer deliberately does not use one.
 """
 
 from __future__ import annotations
@@ -50,6 +50,7 @@ PREFERENCE_VARIANTS = {
     "naive_unbounded",
     "naive_bounded",
 }
+SOLVED_THRESHOLD = {"ll": 200.0}
 SEED_RE = re.compile(r"_seed(\d+)$")
 
 
@@ -146,6 +147,32 @@ def summarize(runs: list[Run]) -> dict[str, float | int | None]:
     }
 
 
+def learning_summary(runs: list[Run], threshold: float) -> dict[str, int]:
+    learned = [run for run in runs if run.peak >= threshold]
+    return {
+        "learned": len(learned),
+        "final_solved": sum(run.final >= threshold for run in runs),
+        "lost_solved": sum(run.final < threshold for run in learned),
+        "collapsed_after_learning": sum(
+            run.drawdown is not None and run.drawdown > 0.2 for run in learned
+        ),
+    }
+
+
+def paired_effect(left: list[Run], right: list[Run], field: str) -> tuple[float, int, int]:
+    """Return median paired left-right difference, wins, and matched n."""
+    left_by_seed = {run.seed: run for run in left}
+    right_by_seed = {run.seed: run for run in right}
+    seeds = sorted(left_by_seed.keys() & right_by_seed.keys())
+    differences = [
+        float(getattr(left_by_seed[seed], field) - getattr(right_by_seed[seed], field))
+        for seed in seeds
+    ]
+    if not differences:
+        return float("nan"), 0, 0
+    return med(differences), sum(diff > 0 for diff in differences), len(differences)
+
+
 def fmt(value: float | int | None, width: int = 9) -> str:
     return "n/a".rjust(width) if value is None else f"{float(value):{width}.1f}"
 
@@ -225,23 +252,27 @@ def main() -> int:
                     f"-> final={run.final:9.1f}, drop={drop_text}"
                 )
 
-    print("\nGate contrasts (median differences only; no pooled p-values)")
+    print(
+        "\nNote: the table's raw >20% column only has a meaningful denominator "
+        "when peak > 0. Use the solved-threshold learning/retention counts below "
+        "for LunarLander."
+    )
+    print("\nGate contrasts (paired by seed; no pooled p-values)")
     if "ll" in selected_cells:
-        ll_true = summarize(cells[("ll", "true")])
-        ll_partial = summarize(cells[("ll", "partial")])
-        if ll_true["n"] and ll_partial["n"]:
-            peak_diff = float(ll_true["peak"]) - float(ll_partial["peak"])
-            final_diff = float(ll_true["final"]) - float(ll_partial["final"])
+        ll_true_runs = cells[("ll", "true")]
+        ll_partial_runs = cells[("ll", "partial")]
+        if ll_true_runs and ll_partial_runs:
+            peak_diff, peak_wins, peak_n = paired_effect(ll_true_runs, ll_partial_runs, "peak")
+            final_diff, final_wins, final_n = paired_effect(ll_true_runs, ll_partial_runs, "final")
             qualifier = "PASS" if peak_diff > 0 and final_diff > 0 else "FAIL"
             print(
-                f"  LunarLander premise: true-partial peak={peak_diff:+.1f}, "
-                f"final={final_diff:+.1f} -> {qualifier}"
+                f"  LunarLander premise: true-partial paired-median "
+                f"peak={peak_diff:+.1f} ({peak_wins}/{peak_n} wins), "
+                f"final={final_diff:+.1f} ({final_wins}/{final_n} wins) -> {qualifier}"
             )
         else:
             print("  LunarLander premise: incomplete")
 
-    bounded_collapse_passes: dict[str, bool] = {}
-    scaling_failures: dict[str, bool] = {}
     for cell in selected_cells:
         summaries = {
             variant: summarize(cells[(cell, variant)])
@@ -249,38 +280,50 @@ def main() -> int:
         }
         if all(summary["n"] for summary in summaries.values()):
             for mode in ("feedback", "naive"):
-                bounded = summaries[f"{mode}_bounded"]
-                unbounded = summaries[f"{mode}_unbounded"]
+                bounded_runs = cells[(cell, f"{mode}_bounded")]
+                unbounded_runs = cells[(cell, f"{mode}_unbounded")]
+                final_effect, final_wins, final_n = paired_effect(
+                    bounded_runs, unbounded_runs, "final"
+                )
+                peak_effect, peak_wins, peak_n = paired_effect(
+                    bounded_runs, unbounded_runs, "peak"
+                )
                 print(
-                    f"  {cell}/{mode}: bounded-unbounded final="
-                    f"{float(bounded['final']) - float(unbounded['final']):+.1f}; "
-                    f"collapse {bounded['collapsed']}/{bounded['drop_n']} vs "
-                    f"{unbounded['collapsed']}/{unbounded['drop_n']}"
+                    f"  {cell}/{mode}: bounded-unbounded paired-median "
+                    f"peak={peak_effect:+.1f} ({peak_wins}/{peak_n} wins), "
+                    f"final={final_effect:+.1f} ({final_wins}/{final_n} wins)"
                 )
 
-            feedback_bounded = summaries["feedback_bounded"]
-            naive_bounded = summaries["naive_bounded"]
-            feedback_bounded_dd = feedback_bounded["drawdown"]
-            naive_bounded_dd = naive_bounded["drawdown"]
-            bounded_collapse_passes[cell] = (
-                int(feedback_bounded["collapsed"]) >= 3
-                and int(feedback_bounded["collapsed"])
-                >= int(naive_bounded["collapsed"]) + 2
-                and feedback_bounded_dd is not None
-                and naive_bounded_dd is not None
-                and float(feedback_bounded_dd) > float(naive_bounded_dd)
-            )
-            scaling_failures[cell] = all(
-                float(summaries[f"{mode}_bounded"]["final"])
-                < 0.5 * float(summaries[f"{mode}_unbounded"]["final"])
-                for mode in ("feedback", "naive")
-            )
-            print(
-                f"  {cell}: bounded collapse pilot heuristic="
-                f"{'PASS' if bounded_collapse_passes[cell] else 'FAIL'}; "
-                f"bounded non-learning criterion="
-                f"{'TRIGGERED' if scaling_failures[cell] else 'not triggered'}"
-            )
+            if cell in SOLVED_THRESHOLD:
+                threshold = SOLVED_THRESHOLD[cell]
+                print(f"  {cell}: learning/retention at solved threshold {threshold:g}")
+                for mode in ("feedback", "naive"):
+                    for bound in ("unbounded", "bounded"):
+                        variant = f"{mode}_{bound}"
+                        learning = learning_summary(cells[(cell, variant)], threshold)
+                        print(
+                            f"    {variant}: ever solved={learning['learned']}/10, "
+                            f"final solved={learning['final_solved']}/10, "
+                            f"lost solved={learning['lost_solved']}/{learning['learned']}, "
+                            f">20% drop after learning="
+                            f"{learning['collapsed_after_learning']}/{learning['learned']}"
+                        )
+                feedback = learning_summary(cells[(cell, "feedback_bounded")], threshold)
+                naive = learning_summary(cells[(cell, "naive_bounded")], threshold)
+                collapse_pass = (
+                    feedback["learned"] >= 3
+                    and feedback["collapsed_after_learning"]
+                    >= naive["collapsed_after_learning"] + 2
+                )
+                print(
+                    f"  {cell}: bounded collapse pilot heuristic="
+                    f"{'PASS' if collapse_pass else 'FAIL'}"
+                )
+            else:
+                print(
+                    f"  {cell}: no environment-specific learning threshold is "
+                    "defined; inspect peak and final directly"
+                )
         else:
             print(f"  {cell}: reward-model gate incomplete")
 
@@ -298,7 +341,7 @@ def main() -> int:
         f"\nVALIDATION PASSED: all {expected_runs} selected runs present; "
         "every preference run delivered 350/350 queries."
     )
-    print("Apply the documented premise, collapse, and scaling gates before advancing.")
+    print("Apply the documented premise and learning/retention gate before advancing.")
     return 0
 
 

@@ -110,9 +110,13 @@ def fragment_trajectories(trajectories: list[Trajectory], fragment_length: int) 
     return fragments
 
 
-def random_query_pairs(fragments: list[Trajectory], query_count: int) -> list[tuple[Trajectory, Trajectory]]:
+def random_query_pairs(
+    fragments: list[Trajectory],
+    query_count: int,
+    rng: random.Random | None = None,
+) -> list[tuple[Trajectory, Trajectory]]:
     shuffled = list(fragments)
-    random.shuffle(shuffled)
+    (rng.shuffle if rng is not None else random.shuffle)(shuffled)
     return list(zip(shuffled[::2], shuffled[1::2]))[:query_count]
 
 
@@ -126,6 +130,7 @@ def dropout_active_learning_pairs(
     dropout_p: float,
     n_batches: int,
     transform_partial: Callable[[float], float] | None = None,
+    rng: random.Random | None = None,
 ) -> list[tuple[Trajectory, Trajectory]]:
     if len(fragments) < 2:
         return []
@@ -142,7 +147,7 @@ def dropout_active_learning_pairs(
                 returns = [model_return + partial for model_return, partial in zip(returns, partial_returns)]
             pred_returns.append(returns)
 
-    return _preference_variance_pairs(fragments, pred_returns, query_count, n_batches)
+    return _preference_variance_pairs(fragments, pred_returns, query_count, n_batches, rng=rng)
 
 
 def ensemble_active_learning_pairs(
@@ -153,6 +158,7 @@ def ensemble_active_learning_pairs(
     add_partial_to_predictions: bool,
     n_batches: int,
     transform_partial: Callable[[float], float] | None = None,
+    rng: random.Random | None = None,
 ) -> list[tuple[Trajectory, Trajectory]]:
     if len(fragments) < 2 or not reward_models:
         return []
@@ -168,7 +174,7 @@ def ensemble_active_learning_pairs(
                 returns = [model_return + partial for model_return, partial in zip(returns, partial_returns)]
             pred_returns.append(returns)
 
-    return _preference_variance_pairs(fragments, pred_returns, query_count, n_batches)
+    return _preference_variance_pairs(fragments, pred_returns, query_count, n_batches, rng=rng)
 
 
 def _partial_fragment_returns(fragments: list[Trajectory], transform_partial: Callable[[float], float] | None) -> list[float]:
@@ -181,6 +187,7 @@ def _preference_variance_pairs(
     pred_returns: list[list[float]],
     query_count: int,
     n_batches: int,
+    rng: random.Random | None = None,
 ) -> list[tuple[Trajectory, Trajectory]]:
     possible_indices = list(range(len(fragments)))
     best_indices_batch = None
@@ -188,7 +195,7 @@ def _preference_variance_pairs(
     best_score = -float("inf")
 
     for _ in range(n_batches):
-        random.shuffle(possible_indices)
+        (rng.shuffle if rng is not None else random.shuffle)(possible_indices)
         indices_batch = list(zip(possible_indices[::2], possible_indices[1::2]))
         if not indices_batch:
             continue
@@ -208,7 +215,7 @@ def _preference_variance_pairs(
             best_vars = variances
 
     if best_indices_batch is None or best_vars is None:
-        return random_query_pairs(fragments, query_count)
+        return random_query_pairs(fragments, query_count, rng=rng)
 
     ranked = sorted(zip(best_indices_batch, best_vars), key=lambda item: item[1], reverse=True)
     return [(fragments[i], fragments[j]) for (i, j), _ in ranked[:query_count]]
@@ -227,12 +234,13 @@ def choose_query_pairs(
     active_learning_batches: int,
     active_query_strategy: str = "auto",
     transform_partial: Callable[[float], float] | None = None,
+    rng: random.Random | None = None,
 ) -> list[tuple[Trajectory, Trajectory]]:
     fragments = fragment_trajectories(trajectories, fragment_length)
     if len(fragments) < 2 or query_count <= 0:
         return []
     if reward_model is None or not active_learning:
-        return random_query_pairs(fragments, query_count)
+        return random_query_pairs(fragments, query_count, rng=rng)
 
     reward_models = reward_model if isinstance(reward_model, list) else [reward_model]
     if active_query_strategy == "auto":
@@ -246,6 +254,7 @@ def choose_query_pairs(
             add_partial_to_predictions,
             active_learning_batches,
             transform_partial,
+            rng,
         )
 
     return dropout_active_learning_pairs(
@@ -258,6 +267,7 @@ def choose_query_pairs(
         dropout_p,
         active_learning_batches,
         transform_partial,
+        rng,
     )
 
 
@@ -709,6 +719,43 @@ def pretrain_reward_model_bt(
     }
 
 
+def _preference_training_accuracy(
+    reward_model: RewardModel,
+    train_pairs: list[Preference],
+    convert_traj: Callable[[Trajectory], list[list[float]]],
+    use_delta_loss: bool,
+    partial_mean: float,
+    partial_std: float,
+    partial_alpha: float,
+) -> float:
+    """Mean correctness on a complete preference buffer.
+
+    Oracle-teacher ratings are hard 0/1 labels, where this is ordinary ranking
+    accuracy. For a soft label, the contribution is the probability mass that
+    the label assigns to the model's chosen side (and an exact 0.5 tie therefore
+    contributes 0.5). This keeps the statistic meaningful for every supported
+    ``Preference.rating`` without changing the hard-label B-Pref case.
+    """
+    if not train_pairs:
+        return 0.0
+    with th.no_grad():
+        x1, x2, ratings = rated_pairs_to_tensors(train_pairs, convert_traj)
+        score1, score2 = reward_model(x1), reward_model(x2)
+        if use_delta_loss:
+            partial1 = partial_reward_tensor(train_pairs, "t1", partial_mean, partial_std)
+            partial2 = partial_reward_tensor(train_pairs, "t2", partial_mean, partial_std)
+            if reward_model.gate_head is not None:
+                score1 = score1 + reward_model.gate(x1) * partial1 * partial_alpha
+                score2 = score2 + reward_model.gate(x2) * partial2 * partial_alpha
+            else:
+                alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
+                score1 = score1 + alpha * partial1
+                score2 = score2 + alpha * partial2
+        chose_first = score1.sum(dim=[1, 2]) > score2.sum(dim=[1, 2])
+        correctness = th.where(chose_first, ratings, 1.0 - ratings)
+        return float(correctness.mean().item())
+
+
 def train_preference_reward_model(
     reward_model: RewardModel,
     train_pairs: list[Preference],
@@ -733,13 +780,16 @@ def train_preference_reward_model(
     weight_l1: float = 0.01,
     output_l1: float = 0.001,
     fixed_epochs_without_validation: bool = False,
-) -> None:
+    train_accuracy_stop: float | None = None,
+) -> dict | None:
     if not train_pairs:
-        return
+        return None
     if loss_reduction not in ("sum", "mean"):
         raise ValueError("loss_reduction must be 'sum' or 'mean'")
     if weight_l1 < 0 or output_l1 < 0:
         raise ValueError("reward-model L1 penalties must be non-negative")
+    if train_accuracy_stop is not None and not 0.0 <= train_accuracy_stop <= 1.0:
+        raise ValueError("train_accuracy_stop must be between 0 and 1")
 
     optimizer = Adam(reward_model.parameters(), lr=learning_rate)
     preference_loss = DeltaLoss() if use_delta_loss else PairwiseLoss()
@@ -750,6 +800,11 @@ def train_preference_reward_model(
     best_val = float("inf")
     best_epoch = 0
     no_improvement = 0
+    epochs_completed = 0
+    last_epoch_train_loss = None
+    train_accuracy_at_stop = None
+    stopped_by_train_accuracy = False
+    stop_reason = "max_epochs"
 
     for epoch in range(epochs):
         # train()/eval() only affect the optional output batch-norm; they are
@@ -807,12 +862,26 @@ def train_preference_reward_model(
             batches += 1
 
         reward_model.eval()
+        epochs_completed = epoch + 1
         train_loss = running_loss / max(batches, 1)
+        last_epoch_train_loss = train_loss
+        train_accuracy = None
+        if train_accuracy_stop is not None:
+            train_accuracy = _preference_training_accuracy(
+                reward_model,
+                train_pairs,
+                convert_traj,
+                use_delta_loss,
+                partial_mean,
+                partial_std,
+                partial_alpha,
+            )
+        accuracy_suffix = f", train_accuracy={train_accuracy:.4f}" if train_accuracy is not None else ""
         if val_pairs or not fixed_epochs_without_validation:
             val_loss = validate_preference_reward_model(
                 reward_model, val_pairs, convert_traj, preference_loss, use_delta_loss, partial_mean, partial_std, partial_alpha
             )
-            print(f"reward model epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+            print(f"reward model epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}{accuracy_suffix}")
             if val_loss < best_val:
                 best_val = val_loss
                 best_epoch = epoch
@@ -820,15 +889,30 @@ def train_preference_reward_model(
                 no_improvement = 0
             else:
                 no_improvement += 1
-                if no_improvement >= patience:
-                    print(f"stopping reward model at epoch {epoch}; restoring epoch {best_epoch} val_loss={best_val:.4f}")
-                    reward_model.load_state_dict(best_state)
-                    break
         else:
             # PEBBLE/B-Pref train each ensemble member on the full preference
             # buffer. With no held-out fold there is no honest early-stopping
             # signal, so run the requested fixed number of epochs.
-            print(f"reward model epoch {epoch}: train_loss={train_loss:.4f} (full-data training)")
+            print(f"reward model epoch {epoch}: train_loss={train_loss:.4f} (full-data training){accuracy_suffix}")
+
+        # B-Pref checks strict accuracy > 0.97 after a complete buffer pass.
+        # This opt-in implementation applies that rule independently to each
+        # member because this codebase trains ensemble members serially. It does
+        # not claim B-Pref's synchronized ensemble loop or persistent optimizer.
+        if train_accuracy is not None and train_accuracy > train_accuracy_stop:
+            stopped_by_train_accuracy = True
+            stop_reason = "train_accuracy"
+            train_accuracy_at_stop = train_accuracy
+            print(
+                f"stopping reward model at epoch {epoch}: train_accuracy={train_accuracy:.4f} "
+                f"> {train_accuracy_stop:.4f}"
+            )
+            break
+        if (val_pairs or not fixed_epochs_without_validation) and no_improvement >= patience:
+            stop_reason = "validation_patience"
+            print(f"stopping reward model at epoch {epoch}; restoring epoch {best_epoch} val_loss={best_val:.4f}")
+            reward_model.load_state_dict(best_state)
+            break
 
     # naive + gate: phase 2 — freeze the trained reward, learn only the per-state gate
     if not use_delta_loss and reward_model.gate_head is not None:
@@ -847,6 +931,30 @@ def train_preference_reward_model(
             patience=gate_patience,
             prior_penalty=gate_prior_penalty,
         )
+
+    reward_model.eval()
+    final_train_accuracy = _preference_training_accuracy(
+        reward_model,
+        train_pairs,
+        convert_traj,
+        use_delta_loss,
+        partial_mean,
+        partial_std,
+        partial_alpha,
+    )
+    return {
+        "epochs_completed": epochs_completed,
+        "last_epoch_train_loss": last_epoch_train_loss,
+        "final_train_accuracy": final_train_accuracy,
+        "train_accuracy_at_stop": train_accuracy_at_stop,
+        "stopped_by_train_accuracy": stopped_by_train_accuracy,
+        "stop_reason": stop_reason,
+        "n_train_pairs": len(train_pairs),
+        "n_val_pairs": len(val_pairs),
+        "train_accuracy_stop": train_accuracy_stop,
+        "best_epoch_zero_based": best_epoch if best_val < float("inf") else None,
+        "best_val_loss": best_val if best_val < float("inf") else None,
+    }
 
 
 def train_gate_head(
@@ -996,15 +1104,17 @@ def train_preference_reward_ensemble(
     weight_l1: float = 0.01,
     output_l1: float = 0.001,
     training_mode: str = "kfold",
-) -> None:
+    train_accuracy_stop: float | None = None,
+) -> list[dict]:
     if not rated_pairs:
-        return
+        return []
     if not reward_models:
         raise ValueError("reward_models must not be empty")
     if training_mode not in ("kfold", "full"):
         raise ValueError("training_mode must be 'kfold' or 'full'")
 
     folds = split_preference_k_folds(rated_pairs, len(reward_models)) if training_mode == "kfold" else None
+    member_stats = []
     for fold_index, reward_model in enumerate(reward_models):
         if training_mode == "full":
             train_pairs, val_pairs = list(rated_pairs), []
@@ -1023,7 +1133,7 @@ def train_preference_reward_ensemble(
             f"training reward ensemble member {fold_index + 1}/{len(reward_models)} "
             f"on {len(train_pairs)} pairs; validating on {len(val_pairs)} pairs"
         )
-        train_preference_reward_model(
+        stats = train_preference_reward_model(
             reward_model,
             train_pairs,
             val_pairs,
@@ -1047,7 +1157,17 @@ def train_preference_reward_ensemble(
             gate_patience=gate_patience,
             gate_prior_penalty=gate_prior_penalty,
             fixed_epochs_without_validation=training_mode == "full",
+            train_accuracy_stop=train_accuracy_stop,
         )
+        if stats is not None:
+            member_stats.append(
+                {
+                    "member_index": fold_index,
+                    "training_mode": training_mode,
+                    **stats,
+                }
+            )
+    return member_stats
 
 
 def validate_preference_reward_model(

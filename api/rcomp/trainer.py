@@ -4,6 +4,7 @@ including the RLHF round loop for the preference modes."""
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -93,6 +94,11 @@ def trajectory_collection_seed(seed: int, round_index: int, stream_index: int) -
     """Keep the historical stream-0 seed and put stream B far outside the
     consecutive per-vector-env seed range used by Stable-Baselines3."""
     return seed * 1000 + round_index * 100 + stream_index * 10_000_000
+
+
+def query_selection_seed(seed: int, round_index: int) -> int:
+    """Independent deterministic seed stream for query-pair construction."""
+    return seed * 1_000_003 + round_index * 10_007 + 20_000_003
 
 
 def learn_policy(
@@ -191,7 +197,7 @@ class RlhfTrainer:
 
         pretrain_trajectories, query_trajectories = self.collect_round_data(round_index)
         self.maybe_pretrain_reward_model(pretrain_trajectories)
-        self.add_query_pairs(query_trajectories, round_query_budget)
+        self.add_query_pairs(query_trajectories, round_query_budget, round_index)
         self.maybe_train_reward_model()
         self.train_policy_round(round_index)
         if self.total_queries >= config.query_budget:
@@ -328,9 +334,10 @@ class RlhfTrainer:
                     )
             self.pretraining_done = True
 
-    def add_query_pairs(self, trajectories: list[Trajectory], round_query_budget: int) -> None:
+    def add_query_pairs(self, trajectories: list[Trajectory], round_query_budget: int, round_index: int) -> None:
         config = self.config
         query_model = self.reward_models if (self.total_queries > 0 or self.pretraining_done) else None
+        query_rng = random.Random(query_selection_seed(config.seed, round_index)) if config.dedicated_query_rng else None
         pairs = choose_query_pairs(
             trajectories,
             query_model,
@@ -344,6 +351,7 @@ class RlhfTrainer:
             active_learning_batches=config.active_learning_batches,
             active_query_strategy=config.active_query_strategy,
             transform_partial=self.runtime.composed_partial_reward,
+            rng=query_rng,
         )
         rated_pairs = rate_pairs_from_true_reward(pairs)
 
@@ -400,7 +408,7 @@ class RlhfTrainer:
                         f"accuracy={d['accuracy']:.3f} (pretrained={config.pretrain_reward_model})"
                     )
             if len(self.reward_models) > 1:
-                train_preference_reward_ensemble(
+                member_training_stats = train_preference_reward_ensemble(
                     self.reward_models,
                     self.rated_train + self.rated_val,
                     convert_traj=self.convert_traj,
@@ -423,11 +431,12 @@ class RlhfTrainer:
                     gate_epochs=config.gate_epochs,
                     gate_patience=config.gate_patience,
                     gate_prior_penalty=config.gate_prior_penalty,
+                    train_accuracy_stop=config.reward_model_train_accuracy_stop,
                 )
                 self.runtime.reward_model = None
                 self.runtime.reward_models = self.reward_models
             else:
-                train_preference_reward_model(
+                training_stats = train_preference_reward_model(
                     self.reward_model,
                     self.rated_train,
                     self.rated_val,
@@ -450,9 +459,22 @@ class RlhfTrainer:
                     gate_epochs=config.gate_epochs,
                     gate_patience=config.gate_patience,
                     gate_prior_penalty=config.gate_prior_penalty,
+                    train_accuracy_stop=config.reward_model_train_accuracy_stop,
+                )
+                member_training_stats = (
+                    [{"member_index": 0, "training_mode": "single", **training_stats}]
+                    if training_stats is not None
+                    else []
                 )
                 self.runtime.reward_model = self.reward_model
                 self.runtime.reward_models = None
+            self.runtime.reward_model_training.append(
+                {
+                    "round": len(self.runtime.reward_model_training),
+                    "cumulative_queries": self.total_queries,
+                    "members": member_training_stats,
+                }
+            )
             if config.learn_partial_alpha:
                 alphas = [float(model.alpha.item()) for model in self.reward_models if model.alpha is not None]
                 self.runtime.partial_alpha = sum(alphas) / len(alphas)
@@ -486,6 +508,14 @@ class RlhfTrainer:
                 stat_trajectories,
                 self.convert_traj,
             )
+            if self.runtime.reward_model_training:
+                # Keep the scale trajectory, not only the final round. This is
+                # essential for diagnosing whether an adaptive training stop
+                # prevents a learned reward from growing until it overwhelms
+                # the partial reward late in policy training.
+                round_training = self.runtime.reward_model_training[-1]
+                round_training["model_reward_output_mean"] = self.runtime.output_mean
+                round_training["model_reward_output_std"] = self.runtime.output_std
             print(f"reward model output stats: mean={self.runtime.output_mean}, std={self.runtime.output_std}")
 
             # M2: how much does the trained model rely on the partial input feature?
@@ -859,8 +889,13 @@ class ExperimentRunner:
             "fragment_length": config.fragment_length if is_preference else None,
             "active_learning": config.active_learning if is_preference else None,
             "active_query_strategy": config.active_query_strategy if is_preference else None,
+            "dedicated_query_rng": config.dedicated_query_rng if is_preference else None,
             "reward_hidden_sizes": list(config.reward_hidden_sizes),
             "reward_model_lr": config.reward_model_lr if is_preference else None,
+            "reward_model_epochs": config.reward_model_epochs if is_preference else None,
+            "reward_model_patience": config.reward_model_patience if is_preference else None,
+            "reward_model_batch_size": config.reward_model_batch_size if is_preference else None,
+            "reward_model_train_accuracy_stop": config.reward_model_train_accuracy_stop if is_preference else None,
             "reward_model_loss_reduction": config.reward_model_loss_reduction if is_preference else None,
             "reward_model_l1": config.reward_model_l1 if is_preference else None,
             "reward_output_l1": config.reward_output_l1 if is_preference else None,
@@ -916,6 +951,7 @@ class ExperimentRunner:
             "gate_error_stats": runtime.gate_error_stats,
             "rm_diagnostics": runtime.rm_diagnostics,
             "rm_diagnostics_before_training": runtime.rm_diagnostics_before,
+            "reward_model_training": runtime.reward_model_training,
             "query_fisher": runtime.query_fisher,
             "pretrain_stats": runtime.pretrain_stats,
             "reward_composition": runtime.composition,
