@@ -42,7 +42,7 @@ def test_preset_key_is_version_agnostic(env_id, expected):
 def test_lookup_returns_a_copy_so_callers_cannot_mutate_the_table():
     first = lookup_preset("Hopper-v5")
     first["ppo"]["learning_rate"] = 999.0
-    assert lookup_preset("Hopper-v5")["ppo"]["learning_rate"] == pytest.approx(9.80828e-05)
+    assert lookup_preset("Hopper-v5")["ppo"]["learning_rate"] == pytest.approx(3e-5)
 
 
 def test_unknown_env_has_no_preset():
@@ -51,17 +51,24 @@ def test_unknown_env_has_no_preset():
         tuned_ppo_hyperparams("NotAnEnv-v1")
 
 
-def test_hopper_preset_matches_the_rl_zoo_block():
+def test_hopper_preset_is_the_validated_gsde_derived_block():
+    """The rl-zoo Hopper block pins Hopper-v5 at the survive-only optimum (~1000).
+
+    Measured replacement: 3 seeds x 1M, median peak 2995 / final 2127. The three
+    settings below are the ones that were shown to matter, so guard them.
+    """
     hyperparams = tuned_ppo_hyperparams("Hopper-v5")
 
-    assert hyperparams["n_steps"] == 512
-    assert hyperparams["batch_size"] == 32
-    assert hyperparams["learning_rate"] == pytest.approx(9.80828e-05)
-    assert hyperparams["gae_lambda"] == pytest.approx(0.99)
-    assert hyperparams["n_epochs"] == 5
-    # activation_fn is stored as a name and resolved lazily
-    assert hyperparams["policy_kwargs"]["activation_fn"] is nn.ReLU
-    assert hyperparams["policy_kwargs"]["net_arch"] == {"pi": [256, 256], "vf": [256, 256]}
+    assert hyperparams["learning_rate"] == pytest.approx(3e-5)
+    assert hyperparams["gamma"] == pytest.approx(0.99)
+    assert hyperparams["n_epochs"] == 20
+    assert hyperparams["clip_range"] == pytest.approx(0.4)
+    assert hyperparams["clip_range_vf"] == pytest.approx(0.5)
+    assert hyperparams["gae_lambda"] == pytest.approx(0.9)
+    assert hyperparams["policy_kwargs"]["net_arch"] == [256, 256]
+    # log_std_init must stay unset so SB3's default 0 (action std 1.0) applies.
+    # Forcing -2 collapsed this config from 2835 to 452 by 160k steps.
+    assert "log_std_init" not in hyperparams["policy_kwargs"]
 
 
 def test_reacher_preset_agrees_with_the_pre_existing_suite_preset():
@@ -119,7 +126,7 @@ def test_tuned_hyperparams_flag_applies_the_preset():
     hyperparams = get_suite("mujoco").ppo_hyperparams(config, _ProbeEnv())
 
     assert hyperparams["n_steps"] == 512
-    assert hyperparams["learning_rate"] == pytest.approx(9.80828e-05)
+    assert hyperparams["learning_rate"] == pytest.approx(3e-5)
 
 
 def test_policy_learning_kwargs_still_win_over_the_preset():
@@ -135,7 +142,7 @@ def test_policy_learning_kwargs_still_win_over_the_preset():
     hyperparams = get_suite("mujoco").ppo_hyperparams(config, _ProbeEnv())
 
     assert hyperparams["n_steps"] == 256
-    assert hyperparams["learning_rate"] == pytest.approx(9.80828e-05)
+    assert hyperparams["learning_rate"] == pytest.approx(3e-5)
 
 
 def test_every_preset_records_its_provenance():

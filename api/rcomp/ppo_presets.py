@@ -145,30 +145,70 @@ PRESETS: dict[str, dict[str, Any]] = {
     "Hopper": {
         "suite": "mujoco",
         "tuned": True,
-        "source": "rl-zoo ppo.yml Hopper-v4 (Optuna-tuned)",
-        "benchmark": "PPO 2410 +/- 10 @ 1M (Hopper-v3); SAC 2326, TQC 3754",
+        "source": (
+            "gSDE paper (arXiv 2005.05719, Raffin/Kober/Stulp) PPO block, minus gSDE itself, "
+            "with SB3-default policy_kwargs. NOT the rl-zoo Hopper-v4 block - that one does "
+            "not work here, see note."
+        ),
+        "benchmark": (
+            "measured here on Hopper-v5, 3 seeds x 1M, n_envs=1, --final-policy last: "
+            "median peak 2995, median final 2127, median drawdown 35%. "
+            "rl-zoo reports PPO 2410 +/- 10 @1M (Hopper-v3); SAC 2326, TQC 3754"
+        ),
         "reference": {"n_envs": 1, "n_timesteps": 1_000_000, "normalize": True},
+        "note": (
+            "REPLACED 2026-08-11 after the rl-zoo Hopper-v4 block failed outright. That block "
+            "(n_steps 512, lr 9.8e-5, gamma .999, gae .99, clip .2, n_epochs 5, ReLU, "
+            "log_std_init -2, ortho_init False) pins Hopper-v5 at the survive-only local "
+            "optimum: ~1000 reward, episode length 1000, total reward_forward 1.0, i.e. the "
+            "agent stands still and banks the +1/step healthy bonus. It never escapes, at "
+            "n_envs 1 or 8, out to 560k steps. Single-variable ablations rescued NOTHING - "
+            "n_envs 1 (989 @260k), gamma 0.99 (1026 @300k), n_epochs 20 (980 @140k), "
+            "log_std_init 0 (1012 @300k) all stay on the plateau, so the block is mismatched "
+            "in several ways at once and bisecting further was not worth the compute. "
+            "The config below escapes it immediately and is what is used instead. "
+            "log_std_init is load-bearing: forcing -2 onto THIS config collapses it from 2835 "
+            "to 452 by 160k, because the gSDE paper only gets away with -2 by supplying "
+            "state-dependent exploration noise that we do not use. "
+            "CAVEAT: this fixes learning, NOT stability. Hopper collapses late under every "
+            "config tried - stock SB3 20% drawdown, this one 35% median with one seed of "
+            "three losing 84%. Hopper cannot carry a claim about reward-model "
+            "overoptimization; always report peak next to final."
+        ),
         "ppo": {
             "policy": "MlpPolicy",
             "n_steps": 512,
             "batch_size": 32,
-            "gamma": 0.999,
-            "learning_rate": 9.80828e-05,
-            "ent_coef": 0.00229519,
-            "clip_range": 0.2,
-            "n_epochs": 5,
-            "gae_lambda": 0.99,
-            "max_grad_norm": 0.7,
-            "vf_coef": 0.835671,
-            "policy_kwargs": deepcopy(_MUJOCO_POLICY_KWARGS),
+            "gamma": 0.99,
+            "learning_rate": 3e-5,
+            "ent_coef": 0.0,
+            "clip_range": 0.4,
+            "clip_range_vf": 0.5,
+            "n_epochs": 20,
+            "gae_lambda": 0.9,
+            # SB3 defaults on purpose: Tanh, ortho_init True, log_std_init 0.
+            # log_std_init 0 (action std 1.0 vs 0.135 at -2) is what keeps Hopper
+            # out of the standing-still optimum - see note.
+            "policy_kwargs": {"net_arch": [256, 256]},
         },
     },
     "Walker2d": {
         "suite": "mujoco",
         "tuned": True,
         "source": "rl-zoo ppo.yml Walker2d-v4 (Optuna-tuned)",
-        "benchmark": "PPO 3479 +/- 822 @ 1M (Walker2d-v3); SAC 3863, TQC 4381",
+        "benchmark": (
+            "PPO 3479 +/- 822 @ 1M (Walker2d-v3); SAC 3863, TQC 4381. "
+            "Measured here on Walker2d-v5 at n_envs=8, 2M: 4986 vs 3038 for stock SB3 (+1949, "
+            "p=0.064), drawdown 1.6%"
+        ),
         "reference": {"n_envs": 1, "n_timesteps": 1_000_000, "normalize": True},
+        "note": (
+            "Unlike Hopper, this rl-zoo block DOES work here, and it survives n_envs=8. Keep "
+            "it. The two differences that matter: it has no log_std_init override (so SB3's "
+            "default 0 applies, not -2) and gamma is 0.99 rather than 0.999 - exactly the two "
+            "settings that sink the Hopper block. Walker was still climbing +15% in the last "
+            "quarter at 2M, so give it 5M."
+        ),
         "ppo": {
             "policy": "MlpPolicy",
             "n_steps": 512,

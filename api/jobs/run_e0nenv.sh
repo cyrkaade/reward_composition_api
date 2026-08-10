@@ -1,53 +1,60 @@
 #!/bin/bash
-#SBATCH --job-name=e0nenv
-#SBATCH --output=logs/slurm/e0nenv_%A_%a.out
-#SBATCH --error=logs/slurm/e0nenv_%A_%a.err
+#SBATCH --job-name=e0v2
+#SBATCH --output=logs/slurm/e0v2_%A_%a.out
+#SBATCH --error=logs/slurm/e0v2_%A_%a.err
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=8G
 #SBATCH --array=1-40
 #SBATCH --requeue
 
-# E0-tuned, second attempt. Fixes the two things run_e0tuned.sh got wrong.
+# E0, third attempt. Both previous attempts were wrong for different reasons.
 #
-# HOPPER: --n-envs 1, because the preset is tuned for it.
-#   run_e0tuned.sh kept n_envs=8, so n_steps 512 became 4096-sample updates and
-#   only 488 of them over 2M steps, instead of the source's ~3,900. Combined
-#   with lr 9.8e-5, log_std_init=-2 and gamma 0.999, every seed locked onto the
-#   survive-only local optimum inside 0.2M steps and stayed there for the
-#   remaining 1.8M:
+# WHAT HAPPENED
+#   run_e0tuned.sh    tuned preset, 2M, n_envs=8. Hopper pinned at ~1011 (both
+#                     arms), i.e. the survive-only local optimum. No verdict.
+#   my n_envs theory  refuted. rl-zoo preset at --n-envs 1 sits at 989 @260k.
+#   my gamma theory   refuted. gamma 0.99 alone: 1026 @300k.
+#   my n_epochs theory refuted. n_epochs 20 alone: 980 @140k.
+#   log_std_init      necessary but not sufficient. Forcing -2 onto the WORKING
+#                     config collapses it 2835 -> 452 by 160k, but flipping the
+#                     rl-zoo block to 0 still leaves it at 1012 @300k.
 #
-#     e0t_hopper_true     final 1011  peak 1033   ep_len 1000.0
-#     e0t_hopper_partial  final 1016  peak 1024   ep_len 1000.0, reward_forward 1.0
-#     stock SB3 @2M       final 2073                            (p=0.014 worse)
+# The rl-zoo Hopper-v4 block is mismatched in several ways at once for
+# Hopper-v5 in this codebase. The Hopper preset in rcomp/ppo_presets.py has been
+# replaced with a gSDE-derived config validated here (3 seeds x 1M, n_envs=1):
 #
-#   i.e. the agent stands perfectly still, banks +1/step for the full episode
-#   and never moves. Both arms tied (p=0.678), so that run gives no verdict.
-#   --n-envs 1 restores 512-sample updates and ~3,900 of them. DummyVecEnv
-#   steps serially, so this is close to wall-clock neutral.
+#   median peak 2995   median final 2127   median drawdown 35%
+#   per seed: 3285->2127 (-35%) | 2599->418 (-84%) | 2995->2518 (-16%)
 #
-# WALKER: 5M instead of 2M, n_envs left at 8.
-#   The preset worked there - 4986 at 2M against 3038 for stock SB3 (+1949,
-#   p=0.064) - but both arms were still climbing at the buzzer (true +15.3%,
-#   partial +11.2% over the last quarter), so the partial's 370-point lead is
-#   the same unconverged-true-arm confound as before. Untuned Walker at 5M
-#   already qualifies (true 5945 > partial 5793, peak 6285 > 5922), so the
-#   tuned arm needs the same budget to be comparable.
+# vs the rl-zoo block's flat ~1000, and stock SB3's 1873 @1M.
 #
-# Everything else is unchanged from run_e0tuned.sh: original partials, tuned
-# preset, --final-policy last, 10 seeds.
+# WALKER is unchanged and still uses its rl-zoo block, which does work here
+# (4986 vs 3038 for stock at 2M) and survives n_envs=8. It only needs a longer
+# budget: both arms were still climbing +15%/+11% in the last quarter at 2M.
 #
-# READ THE RESULT WITH jobs/peak_vs_final.py - median peak next to median final.
+# WHAT THIS JOB MEASURES
+#   Hopper  1M, --n-envs 1, validated preset, true vs partial, 10 seeds
+#   Walker  5M, n_envs=8,   rl-zoo preset,    true vs partial, 10 seeds
 #
-# DECISION RULE (unchanged)
-#   true > partial on BOTH final and peak -> envs qualify, keep the original
-#                                            partials, do NOT submit run_fix.sh
-#   true <= partial on final only         -> stability; try
-#                                            --policy-learning-kwargs '{clip_range_vf:0.5}'
-#   true <= partial on PEAK               -> the partial genuinely wins; only
-#                                            then is run_fix.sh justified
-#   both arms tied at a floor / still     -> the run gives no verdict; do not
-#   climbing at the last eval                read anything into the sign
+# EXPECT HOPPER TO BE UNUSABLE FOR THE COLLAPSE CLAIM EITHER WAY. It collapses
+# under every configuration tried: stock 20%, validated preset 35% median with
+# one seed of three losing 84%. That is an environment property, not a setup
+# bug, so Hopper cannot support "the prior suppresses reward-model
+# overoptimization" - PPO on the GROUND-TRUTH reward already collapses there.
+# This job answers only the narrower E0 question: does the partial beat the true
+# reward once the true arm can actually learn?
+#
+# READ WITH jobs/peak_vs_final.py - median peak next to median final.
+#
+# DECISION RULE
+#   true > partial on BOTH final and peak  -> qualifies; keep original partials;
+#                                             do NOT submit run_fix.sh
+#   true > partial on peak, loses on final -> stability only. Report peak, and
+#                                             drop Hopper from any collapse claim.
+#   true <= partial on PEAK                -> the partial genuinely wins; only
+#                                             then is run_fix.sh justified
+#   arms tied at a floor, or still climbing at the last eval -> no verdict
 
 set -euo pipefail
 
@@ -62,8 +69,10 @@ set_env_vars "$CELL"
 
 # Per-env corrections to the shared table.
 case "$CELL" in
-  hopper) NENV="--n-envs 1" ;;
-  walker) NENV=""; STEPS=5000000 ;;
+  # n_envs=1 matches the validated Hopper measurement above. Do not raise it
+  # without re-measuring: this preset has only ever been checked at 1.
+  hopper) NENV="--n-envs 1"; STEPS=1000000 ;;
+  walker) NENV="";           STEPS=5000000 ;;
   *) echo "this job only covers hopper and walker" >&2; exit 1 ;;
 esac
 
@@ -73,7 +82,7 @@ else
   PARTIAL_FLAG="--partial $PARTIAL"
 fi
 
-LOGDIR="logs/e0n_${CELL}_${MODE}"
+LOGDIR="logs/e0v2_${CELL}_${MODE}"
 RUNNAME="${CELL}_${MODE}_seed${SEED}"
 
 if [ -f "${LOGDIR}/${RUNNAME}/metadata.json" ]; then
