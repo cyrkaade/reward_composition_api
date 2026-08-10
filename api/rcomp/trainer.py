@@ -736,6 +736,7 @@ class ExperimentRunner:
             "final_policy": config.final_policy,
             "collection_timesteps": config.collection_timesteps,
             "policy_learning_kwargs": config.policy_learning_kwargs or {},
+            "tuned_hyperparams": config.tuned_hyperparams,
             "synthetic_queries": synthetic_queries,
             "query_budget": config.query_budget if is_preference else 0,
             "fragment_length": config.fragment_length if is_preference else None,

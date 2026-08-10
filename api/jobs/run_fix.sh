@@ -10,6 +10,19 @@
 
 # Re-run Hopper and Walker2d with partials that are actually incomplete.
 #
+# !! DO NOT SUBMIT THIS UNTIL run_e0tuned.sh HAS BEEN CHECKED (2026-08-10) !!
+#
+# The premise below is probably wrong. The inversion it describes was measured
+# with stock SB3 PPO defaults at 5M steps, where Hopper's TRUE arm peaks at 3532
+# and then collapses to 1830 (the partial peaks lower, at 2627, but holds it),
+# and Walker's true arm had not converged. Neither inversion is statistically
+# significant (Hopper p=0.076, Walker p=1.000, n=10). run_e0tuned.sh re-measures
+# both with tuned hyperparameters at 2M steps. If the true arm then sits cleanly
+# above the partial, these 460 runs are unnecessary and the ORIGINAL partials
+# stay. See jobs/env_common.sh for the full numbers.
+#
+# Original rationale, retained for the record:
+#
 # The first attempt used hopper_capped_forward_survive and
 # walker2d_survive_forward. Both produced BETTER policies than training on the
 # ground-truth reward (Hopper 2436 vs 1677, Walker2d 5854 vs 5723, scored on
@@ -51,7 +64,7 @@ case "$GROUP" in
   base)
     LOGDIR="logs/fx_base_${CELL}_${VARIANT}"
     RUNNAME="${CELL}_${VARIANT}_seed${SEED}"
-    if [ "$VARIANT" = "true" ]; then ARGS="--mode true"; else ARGS="--mode partial --partial $PARTIAL"; fi
+    if [ "$VARIANT" = "true" ]; then ARGS="--mode true"; else ARGS="--mode partial --partial $PARTIAL_LOWCAP"; fi
     ARGS="$ARGS $EXTRA"
     ;;
   main)
@@ -60,7 +73,7 @@ case "$GROUP" in
     if [ "$VARIANT" = "feedback" ]; then
       ARGS="--mode feedback $RLHF $EXTRA"
     else
-      ARGS="--mode naive --partial-alpha 1.0 --partial $PARTIAL $RLHF $EXTRA"
+      ARGS="--mode naive --partial-alpha 1.0 --partial $PARTIAL_LOWCAP $RLHF $EXTRA"
     fi
     ;;
   combo)
@@ -73,7 +86,7 @@ case "$GROUP" in
       f1p1) FEAT="--include-partial-feature";    PRE="--pretrain-reward-model --pretrain-target partial" ;;
       *) echo "unknown combo variant: $VARIANT" >&2; exit 1 ;;
     esac
-    ARGS="--mode naive --partial-alpha 1.0 --partial $PARTIAL $FEAT $PRE $RLHF --save-reward-model $EXTRA"
+    ARGS="--mode naive --partial-alpha 1.0 --partial $PARTIAL_LOWCAP $FEAT $PRE $RLHF --save-reward-model $EXTRA"
     ;;
   *) echo "unknown group: $GROUP" >&2; exit 1 ;;
 esac

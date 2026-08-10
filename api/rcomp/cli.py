@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         "summarize": _handle_summarize,
         "list-envs": _handle_list_envs,
         "list-partials": _handle_list_partials,
+        "list-presets": _handle_list_presets,
         "validate-partial": _handle_validate_partial,
         "partiality": _handle_partiality,
         "plot-partiality": _handle_plot_partiality,
@@ -74,6 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_partials_parser = subparsers.add_parser("list-partials", help="List partial rewards found in the partials folders")
     list_partials_parser.add_argument("--suite", choices=SUITE_NAMES, default=None)
+
+    list_presets_parser = subparsers.add_parser(
+        "list-presets",
+        help="Show the per-env PPO hyperparameters in rcomp/ppo_presets.py (applied with --tuned-hyperparams)",
+    )
+    list_presets_parser.add_argument("--suite", choices=SUITE_NAMES, default=None)
+    list_presets_parser.add_argument("--env-id", default=None, help="Show only the preset that would apply to this env id")
 
     validate_parser = subparsers.add_parser("validate-partial", help="Import and smoke-check a partial reward")
     validate_parser.add_argument("--suite", choices=SUITE_NAMES, default=MUJOCO_SUITE)
@@ -206,6 +214,33 @@ def _handle_list_partials(args) -> int:
     for spec in specs:
         envs = f" [{', '.join(spec.env_ids)}]" if spec.env_ids else ""
         print(f"{spec.suite}/{spec.name}{envs}: {spec.description}")
+    return 0
+
+
+def _handle_list_presets(args) -> int:
+    from .ppo_presets import describe_presets
+
+    rows = describe_presets(env_id=args.env_id, suite=args.suite)
+    if not rows:
+        target = args.env_id or args.suite or "any suite"
+        print(f"no PPO preset for {target} (see rcomp/ppo_presets.py)")
+        return 0
+
+    for row in rows:
+        flag = "tuned" if row.get("tuned") else "NOT TUNED"
+        print(f"{row['key']} [{row.get('suite', '?')}, {flag}]")
+        print(f"  source:    {row.get('source', '-')}")
+        print(f"  benchmark: {row.get('benchmark', '-')}")
+        reference = row.get("reference", {})
+        if reference:
+            print("  reference: " + ", ".join(f"{k}={v}" for k, v in reference.items()) + "   (recorded only, not applied)")
+        if row.get("note"):
+            print(f"  note:      {row['note']}")
+        for name, value in sorted(row.get("ppo", {}).items()):
+            if isinstance(value, dict) and value.get("schedule") == "linear":
+                value = f"linear {value['initial']} -> 0"
+            print(f"    {name}: {value}")
+        print()
     return 0
 
 

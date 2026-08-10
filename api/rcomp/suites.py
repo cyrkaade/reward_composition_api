@@ -135,8 +135,23 @@ class Suite:
         return isinstance(observation_space, spaces.Box) and len(observation_space.shape or ()) == 1
 
     def ppo_hyperparams(self, config, probe_env: gym.Env) -> dict[str, Any]:
+        """Suite defaults, then the tuned preset file, then explicit CLI overrides.
+
+        The preset layer is skipped unless ``--tuned-hyperparams`` is set, so the
+        default behaviour (and therefore comparability with the archived runs)
+        is unchanged.
+        """
+        hyperparams = self.default_ppo_hyperparams(config, probe_env)
+        if getattr(config, "tuned_hyperparams", False):
+            from .ppo_presets import tuned_ppo_hyperparams
+
+            hyperparams.update(tuned_ppo_hyperparams(config.env_id))
+        hyperparams.update(deepcopy(config.policy_learning_kwargs or {}))
+        return hyperparams
+
+    def default_ppo_hyperparams(self, config, probe_env: gym.Env) -> dict[str, Any]:
         is_image = isinstance(probe_env.observation_space, spaces.Box) and len(probe_env.observation_space.shape or ()) == 3
-        hyperparams = {
+        return {
             "policy": "CnnPolicy" if is_image else "MlpPolicy",
             "n_steps": 2048,
             "batch_size": 64,
@@ -149,8 +164,6 @@ class Suite:
             "max_grad_norm": 0.5,
             "vf_coef": 0.5,
         }
-        hyperparams.update(deepcopy(config.policy_learning_kwargs or {}))
-        return hyperparams
 
     def observation_features(self, observation_space: spaces.Space, observation) -> np.ndarray:
         from .envs import observation_features
@@ -245,7 +258,7 @@ class MuJoCoSuite(Suite):
     def should_normalize_observation(self, observation_space: spaces.Space) -> bool:
         return True
 
-    def ppo_hyperparams(self, config, probe_env: gym.Env) -> dict[str, Any]:
+    def default_ppo_hyperparams(self, config, probe_env: gym.Env) -> dict[str, Any]:
         from torch import nn
 
         if config.preset == "reacher" or (config.preset == "auto" and config.env_id == "Reacher-v5"):
@@ -286,7 +299,6 @@ class MuJoCoSuite(Suite):
                     "net_arch": {"pi": [256, 256], "vf": [256, 256]},
                 },
             }
-        hyperparams.update(deepcopy(config.policy_learning_kwargs or {}))
         return hyperparams
 
     def eval_model_observation(self, stats_source, observation):
@@ -339,10 +351,10 @@ class AtariSuite(Suite):
     def should_normalize_observation(self, observation_space: spaces.Space) -> bool:
         return True
 
-    def ppo_hyperparams(self, config, probe_env: gym.Env) -> dict[str, Any]:
+    def default_ppo_hyperparams(self, config, probe_env: gym.Env) -> dict[str, Any]:
         from torch import nn
 
-        hyperparams = {
+        return {
             "policy": "MlpPolicy",
             "n_steps": 128,
             "batch_size": 256,
@@ -359,8 +371,6 @@ class AtariSuite(Suite):
                 "net_arch": {"pi": [256, 256], "vf": [256, 256]},
             },
         }
-        hyperparams.update(deepcopy(config.policy_learning_kwargs or {}))
-        return hyperparams
 
     def observation_features(self, observation_space: spaces.Space, observation) -> np.ndarray:
         return np.asarray(observation, dtype=np.float32).reshape(-1) / 255.0

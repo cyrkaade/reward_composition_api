@@ -219,6 +219,8 @@ def build_command(config: SweepConfig, env_id: str, seed: int, variant: Variant)
 
     if config.suite == MUJOCO_SUITE:
         command.extend(["--preset", str(config.preset)])
+    if config.tuned_hyperparams:
+        command.append("--tuned-hyperparams")
     if config.partial:
         command.extend(["--partial", config.partial])
     if config.progress_bar:

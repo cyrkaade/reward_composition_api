@@ -59,6 +59,7 @@ class ExperimentConfig:
     progress_bar: bool = _f(False, "Show the stable-baselines3 progress bar")
 
     preset: str | None = _f(None, "MuJoCo PPO preset", choices=("auto", "generic", "reacher"))
+    tuned_hyperparams: bool = _f(False, "Use the literature-tuned per-env PPO hyperparameters in rcomp/ppo_presets.py (off = stock defaults, behaviour unchanged)")
     partial: str | None = _f(None, "Manual partial reward reference: <module> or <module>:<name>")
 
     rlhf_rounds: int = _f(5, "Number of RLHF rounds")
@@ -144,6 +145,7 @@ class SweepConfig:
     pretrain_lr: float = _f(1e-3, "Pretraining learning rate")
     device: str = _f("auto", "Torch device", choices=DEVICES)
     preset: str | None = _f(None, "MuJoCo PPO preset", choices=("auto", "generic", "reacher"))
+    tuned_hyperparams: bool = _f(False, "Use the literature-tuned per-env PPO hyperparameters in rcomp/ppo_presets.py (off = stock defaults, behaviour unchanged)")
     progress_bar: bool = _f(False, "Show the stable-baselines3 progress bar")
     normalize_model_reward: bool = _f(False, "Standardize model rewards to the target mean/std")
     model_reward_min: float | None = _f(None, "Clip model rewards below this value ('none' disables)")
