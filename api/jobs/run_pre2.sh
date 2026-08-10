@@ -2,14 +2,15 @@
 #SBATCH --job-name=pre2
 #SBATCH --output=logs/slurm/pre2_%A_%a.out
 #SBATCH --error=logs/slurm/pre2_%A_%a.err
-#SBATCH --time=24:00:00
+#SBATCH --time=36:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=8G
-#SBATCH --array=1-550
+#SBATCH --array=1-1000
 #SBATCH --requeue
 
 # Does pretraining + active learning actually augment naive, once the three
-# implementation defects found on 2026-08-10 are removed?
+# implementation defects found on 2026-08-10 are removed - measured on four
+# environments with the literature-tuned PPO config throughout?
 #
 # The old M3 result ("pretraining never wins") was measured through three bugs:
 #
@@ -38,18 +39,42 @@
 #
 # Everything is opt-in; with no flags the code behaves exactly as before.
 #
-# Envs: LunarLander-v3 (the clean env; collapse present) and Pusher-v5 (no
-# collapse anywhere - the negative control). Hopper/Walker are deliberately
-# absent: they are covered by run_e0tuned.sh and Hopper's true arm collapses on
-# its own, so it cannot support any claim about reward-model overoptimization.
+# TUNED HYPERPARAMETERS EVERYWHERE. Every arm passes --tuned-hyperparams, so
+# nothing here is comparable with the archived stock-PPO runs and the floor
+# (partial), ceiling (true) and vanilla (feedback) references are all re-measured
+# in this job rather than reused. What the flag actually changes, verified:
+#     LunarLander-v3  5 keys  (gamma .99->.999, n_steps 2048->1024,
+#                              n_epochs 10->4, gae_lambda .95->.98, ent_coef 0->.01)
+#     Walker2d-v5     8 keys  (lr 3e-4->5.05e-5, clip .2->.1, n_epochs 10->20,
+#                              n_steps 2048->512, batch 64->32, ...)
+#     Pusher-v5       0 keys  - rl-zoo has no PPO block, the preset IS SB3 defaults
+#     Reacher-v5      0 keys  - the suite already applied the tuned Reacher block
+# No preset here carries a lin_* schedule, so the sawtooth trap that
+# resolve_ppo_preset warns about (schedules reset every RLHF round) does not apply.
+#
+# ENVIRONMENTS - four, chosen so the mechanism claim is falsifiable:
+#   ll      LunarLander-v3  collapse env: true is stable (3.0% drawdown, 0/10
+#                           seeds) while feedback collapses (46.6%, 28/40) and
+#                           naive does not (8.8%).
+#   walker  Walker2d-v5     the second collapse env, same pattern with a bigger
+#                           gap (true 3.0% 0/10; feedback 8.6% 18/45, final 814;
+#                           naive 1.2% 1/45, final 5127). CLAUDE.md used to say
+#                           "avoid Walker2d" - that note came from the
+#                           partial-beats-true inversion, which turned out to be
+#                           a tie (p=1.000) and is irrelevant to collapse.
+#   pusher  Pusher-v5       negative control: no collapse for any method (5-7%).
+#   reacher Reacher-v5      negative control: short fixed horizon, ~1 seed in 5
+#                           fails catastrophically, so report medians + failure rate.
+# Hopper is deliberately absent: its true arm collapses 19.9% (5/10 seeds) with
+# the GROUND-TRUTH reward, so Hopper collapse cannot be attributed to the reward
+# model. HalfCheetah is bimodal. Ant/Humanoid have no working PPO ceiling.
 #
 # --no-include-partial-feature is REQUIRED on every naive arm: if the partial is
 # a model input, pretraining a network to predict an input it can already see is
 # trivial and measures nothing.
 #
 # 10 seeds. The pre-vs-none contrast pools to n=20 pairs per (env, budget) over
-# the AL factor. That is enough for an effect the size of the MSE damage
-# (-57 at 350, p<0.001 in the archive) and marginal for anything subtler.
+# the AL factor, and n=80 per env across the ladder.
 
 set -euo pipefail
 
@@ -66,9 +91,15 @@ case "$CELL" in
   ll)
     SUITE=box2d;  ENV=LunarLander-v3; PARTIAL=lunar_lander_approach
     STEPS=2000000; EXTRA="--collection-timesteps 30000" ;;
+  walker)
+    SUITE=mujoco; ENV=Walker2d-v5;    PARTIAL=walker2d_survive_forward
+    STEPS=2000000; EXTRA="" ;;
   pusher)
     SUITE=mujoco; ENV=Pusher-v5;      PARTIAL=pusher_honest
     STEPS=3000000; EXTRA="" ;;
+  reacher)
+    SUITE=mujoco; ENV=Reacher-v5;     PARTIAL=reacher_distance_partial
+    STEPS=5000000; EXTRA="" ;;
   *) echo "unknown cell: $CELL" >&2; exit 1 ;;
 esac
 
@@ -79,7 +110,6 @@ PRE=""
 AL="--active-learning"
 ENSEMBLE=""
 TANH=""
-TUNED=""
 
 # --pretrain-holdout is ON for every pretraining arm except bt_leak, which is
 # the deliberate control for the leak.
@@ -88,11 +118,20 @@ BT="--pretrain-reward-model --pretrain-target partial --pretrain-loss bt"
 MSE="--pretrain-reward-model --pretrain-target partial --pretrain-loss mse"
 
 case "$VARIANT" in
+  # --- E0 references --------------------------------------------------------
+  # true    = PPO on the ground-truth reward. The control that makes collapse
+  #           attributable to the reward model rather than to PPO.
+  # partial = the hand-written partial alone, no learning. The floor, and the
+  #           check that the env still qualifies (true must beat partial).
+  # BUDGET is ignored for both.
+  true)         MODE="true";     PARTIAL_ARGS="" ;;
+  partial)      MODE="partial";  PARTIAL_ARGS="" ;;
+  fb_al)        MODE="feedback"; PARTIAL_ARGS="" ;;
+
   # --- main grid: pretraining objective x active learning -------------------
   none_al)      PRE="";                  AL="--active-learning" ;;
   none_noal)    PRE="";                  AL="--no-active-learning" ;;
   mse_al)       PRE="$MSE $HOLDOUT";     AL="--active-learning" ;;
-  mse_noal)     PRE="$MSE $HOLDOUT";     AL="--no-active-learning" ;;
   bt_al)        PRE="$BT $HOLDOUT";      AL="--active-learning" ;;
   bt_noal)      PRE="$BT $HOLDOUT";      AL="--no-active-learning" ;;
 
@@ -118,19 +157,6 @@ case "$VARIANT" in
   tanh_naive)    TANH="--tanh-model-reward" ;;
   tanh_feedback) TANH="--tanh-model-reward"; MODE="feedback"; PARTIAL_ARGS="" ;;
 
-  # --- vanilla RLHF reference at the new bottom rung ------------------------
-  fb_al)        MODE="feedback"; PARTIAL_ARGS="" ;;
-
-  # --- E8: hyperparameter control ------------------------------------------
-  # Everything above runs the STOCK PPO config, because that is what the ~1,500
-  # archived LunarLander runs use. These three re-run the collapse comparison
-  # under rl-zoo's tuned LunarLander block so "your collapse is just an untuned
-  # PPO artifact" is answerable with data. No lin_* schedule in that preset, so
-  # the sawtooth trap in resolve_ppo_preset does not apply.
-  tuned_true)     MODE="true";     PARTIAL_ARGS=""; TUNED="--tuned-hyperparams" ;;
-  tuned_feedback) MODE="feedback"; PARTIAL_ARGS=""; TUNED="--tuned-hyperparams" ;;
-  tuned_naive)    TUNED="--tuned-hyperparams" ;;
-
   *) echo "unknown variant: $VARIANT" >&2; exit 1 ;;
 esac
 
@@ -153,7 +179,8 @@ fi
 srun python -m rcomp train \
   --suite "$SUITE" --env-id "$ENV" --partial "$PARTIAL" \
   --mode "$MODE" $PARTIAL_ARGS \
-  $PRE $AL $ENSEMBLE $TANH $TUNED $EXTRA \
+  $PRE $AL $ENSEMBLE $TANH $EXTRA \
+  --tuned-hyperparams \
   --final-policy last \
   --reward-model-diagnostics --query-fisher-diagnostic \
   --query-budget "$BUDGET" --rlhf-rounds 5 \

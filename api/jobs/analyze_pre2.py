@@ -29,8 +29,16 @@ from pathlib import Path
 import numpy as np
 
 CHANCE_BT = math.log(2.0)
-POSITIVE_SCALE = {"lunarlander"}  # envs where a drawdown ratio makes sense
-EXPECTED_RUNS = 550               # keep in sync with jobs/make_params_pre2.py
+# Drawdown is a ratio final/peak, which is only meaningful where the reward
+# scale is positive. Pusher and Reacher rewards are negative ("closer to 0 is
+# better"), so a drawdown percentage there is nonsense and is suppressed.
+POSITIVE_SCALE = {"lunarlander", "walker2d"}
+EXPECTED_RUNS = 1000              # keep in sync with jobs/make_params_pre2.py
+ENV_ORDER = ["lunarlander", "walker2d", "pusher", "reacher"]
+
+
+def env_sort_key(env: str) -> tuple[int, str]:
+    return (ENV_ORDER.index(env) if env in ENV_ORDER else len(ENV_ORDER), str(env))
 
 
 # --------------------------------------------------------------------------- io
@@ -121,7 +129,7 @@ def paired(runs, a_variant, b_variant, key="final", envs=None, budgets=None):
             continue
         if a_variant in by_variant and b_variant in by_variant:
             cells[(env, budget)].append(by_variant[a_variant] - by_variant[b_variant])
-    return {k: v for k, v in sorted(cells.items(), key=lambda kv: (str(kv[0][0]), kv[0][1]))}
+    return {k: v for k, v in sorted(cells.items(), key=lambda kv: (env_sort_key(kv[0][0]), kv[0][1]))}
 
 
 def report(title, cells, note="", better="higher"):
@@ -153,7 +161,7 @@ def median_of(runs, variant, key, env=None, budget=None):
 def drawdown_table(runs, variants, budget=None):
     print(f"\n   {'variant':>16} {'env':>12} {'n':>4} {'peak':>10} {'final':>10} {'drawdown':>9} {'>20%':>8}")
     for variant in variants:
-        for env in sorted({r["env"] for r in runs if r["variant"] == variant}):
+        for env in sorted({r["env"] for r in runs if r["variant"] == variant}, key=env_sort_key):
             rows = [r for r in runs if r["variant"] == variant and r["env"] == env
                     and r["peak"] is not None and r["final"] is not None
                     and (budget is None or r["budget"] == budget)]
@@ -205,7 +213,7 @@ def e1(runs):
     print("   (chance BT loss = 0.693; the MSE failure is HIGH loss at ABOVE-chance accuracy = confidently wrong)")
     print(f"\n   {'variant':>10} {'env':>12} {'BT before':>11} {'acc before':>11} {'BT after':>10} {'acc after':>10}")
     for variant in ("none_al", "mse_al", "bt_al", "true_al"):
-        for env in sorted({r["env"] for r in runs if r["variant"] == variant}):
+        for env in sorted({r["env"] for r in runs if r["variant"] == variant}, key=env_sort_key):
             print(f"   {variant:>10} {env:>12} {median_of(runs, variant, 'bt_before', env):>11.3f} "
                   f"{median_of(runs, variant, 'acc_before', env):>11.3f} "
                   f"{median_of(runs, variant, 'bt_after', env):>10.3f} "
@@ -239,7 +247,7 @@ def e2(runs):
     print("   (how much the first batch of answers is expected to pin down the reward parameters)")
     print(f"\n   {'variant':>10} {'env':>12} {'fisher round 0':>16} {'selector had a model':>22}")
     for variant in ("none_al", "mse_al", "bt_al"):
-        for env in sorted({r["env"] for r in runs if r["variant"] == variant}):
+        for env in sorted({r["env"] for r in runs if r["variant"] == variant}, key=env_sort_key):
             trained = [r["selector_trained"] for r in runs if r["variant"] == variant and r["env"] == env]
             print(f"   {variant:>10} {env:>12} {median_of(runs, variant, 'fisher0', env):>16.4g} "
                   f"{str(any(trained)):>22}")
@@ -265,7 +273,7 @@ def e3(runs):
     print("\n-- absolute level per arm, to check nothing is saturated at the top --")
     print(f"\n   {'variant':>10} {'env':>12} " + " ".join(f"{'q=' + str(b):>10}" for b in (175, 350, 700)))
     for variant in ("fb_al", "none_al", "bt_al", "mse_al"):
-        for env in sorted({r["env"] for r in runs if r["variant"] == variant}):
+        for env in sorted({r["env"] for r in runs if r["variant"] == variant}, key=env_sort_key):
             cells = " ".join(f"{median_of(runs, variant, 'final', env, b):>10.1f}" for b in (175, 350, 700))
             print(f"   {variant:>10} {env:>12} {cells}")
 
@@ -292,7 +300,7 @@ def e5(runs):
            note="positive = the old shared-rollout number was inflated by memorisation.")
     print(f"\n   {'variant':>10} {'env':>12} {'BT before':>11} {'acc before':>11} {'fisher round 0':>16}")
     for variant in ("bt_leak", "bt_al"):
-        for env in sorted({r["env"] for r in runs if r["variant"] == variant}):
+        for env in sorted({r["env"] for r in runs if r["variant"] == variant}, key=env_sort_key):
             print(f"   {variant:>10} {env:>12} {median_of(runs, variant, 'bt_before', env):>11.3f} "
                   f"{median_of(runs, variant, 'acc_before', env):>11.3f} "
                   f"{median_of(runs, variant, 'fisher0', env):>16.4g}")
@@ -326,39 +334,72 @@ def e7(runs):
     print("   mechanism claim survives the standard bounded model and gets much stronger.")
 
 
-def e8(runs):
+def e0(runs):
     print("\n" + "=" * 100)
-    print("E8  HYPERPARAMETER CONTROL: is the collapse an artifact of the untuned PPO config?")
+    print("E0  REFERENCES: does each environment still qualify, and where does collapse happen?")
     print("=" * 100)
-    print("   The whole grid runs stock PPO, matching the ~1,500 archived LunarLander runs.")
-    print("   These three arms re-run the collapse comparison under rl-zoo's tuned LunarLander")
-    print("   block (gamma 0.99->0.999, n_steps 2048->1024, n_epochs 10->4, gae_lambda")
-    print("   0.95->0.98, ent_coef 0->0.01). Pusher is absent because the flag is a verified")
-    print("   no-op there: its preset is tuned=False, 0 differing keys.")
-    print("\n-- collapse under each config (LunarLander, q=350) --")
-    drawdown_table(runs, ("fb_al", "tuned_feedback", "none_al", "tuned_naive", "tuned_true"), budget=350)
-    print("\n   READ: the claim needs the TRUE arm stable and FEEDBACK collapsing under BOTH")
-    print("   configs. If tuned_true is stable and tuned_feedback still collapses while")
-    print("   tuned_naive does not, the mechanism is not a hyperparameter artifact and the")
-    print("   'why didn't you tune PPO' review comment is answered with data.")
-    print("   If tuned_true itself collapses, LunarLander joins Hopper as contaminated under")
-    print("   that config - report the stock numbers and say why.")
-    report("-- policy: tuned naive minus tuned feedback (the M1 gap under the tuned config) --",
-           paired(runs, "tuned_naive", "tuned_feedback", budgets=[350]),
-           note="compare with fb_al vs none_al above; the gap should survive, not necessarily match.")
+    print("   Everything in this job runs --tuned-hyperparams, so none of it is comparable")
+    print("   with the archived stock-PPO runs. Floor, ceiling and vanilla are re-measured here.")
+
+    print("\n-- does the env qualify? true must beat partial, or the premise fails --")
+    print(f"\n   {'env':>12} {'true':>12} {'partial':>12} {'gap':>12}   verdict")
+    for env in sorted({r["env"] for r in runs}, key=env_sort_key):
+        t, p = median_of(runs, "true", "final", env), median_of(runs, "partial", "final", env)
+        if t != t or p != p:
+            continue
+        gap = t - p
+        # every env here is "larger is better" on the raw scale; Pusher/Reacher
+        # are negative but still ordered that way (closer to 0 = larger = better)
+        print(f"   {env:>12} {t:>12.1f} {p:>12.1f} {gap:>+12.1f}   "
+              f"{'qualifies' if gap > 0 else 'PREMISE FAILS - the partial beats the true reward'}")
+
+    print("\n-- collapse: is PPO-on-true stable while the LEARNED reward runs away? --")
+    print("   The mechanism claim only holds where the true arm does NOT collapse. Where it")
+    print("   does (Hopper, in the archive: 19.9%, 5/10 seeds), collapse cannot be blamed on")
+    print("   the reward model. Drawdown is suppressed on negative-scale envs.")
+    drawdown_table(runs, ("true", "partial", "fb_al", "none_al", "bt_al"), budget=350)
+
+    report("-- M1 under the tuned config: naive minus vanilla feedback --",
+           paired(runs, "none_al", "fb_al"),
+           note="the paper's headline. Must survive on the two collapse envs at minimum.")
+
+
+def env_scales(runs) -> dict[str, float]:
+    """Robust within-environment spread, used to make effects comparable across
+    envs before pooling. Walker2d returns are ~900 wide and Reacher's are ~2, so
+    pooling raw differences would just report Walker2d. MAD x 1.4826 is the
+    normal-consistent estimator and is not moved by the bimodal tails that make
+    a plain standard deviation useless here."""
+    scales = {}
+    for env in {r["env"] for r in runs}:
+        finals = [r["final"] for r in runs if r["env"] == env and r["final"] is not None]
+        if len(finals) < 3:
+            continue
+        centre = st.median(finals)
+        mad = st.median([abs(x - centre) for x in finals])
+        scales[env] = max(mad * 1.4826, 1e-9)
+    return scales
 
 
 def verdict(runs):
     print("\n" + "=" * 100)
-    print("SUMMARY")
+    print("SUMMARY  (effects in within-environment SD units, so envs on different scales pool fairly)")
     print("=" * 100)
     checks = []
+    scales = env_scales(runs)
 
     def med_all(cells):
-        pooled = [d for diffs in cells.values() for d in diffs]
-        return (st.median(pooled), wilcoxon_p(pooled), len(pooled)) if pooled else (float("nan"),) * 2 + (0,)
+        pooled = [d / scales[env] for (env, _), diffs in cells.items() if env in scales for d in diffs]
+        if not pooled:
+            return float("nan"), float("nan"), 0, ""
+        # how many (env, budget) cells point the same way as the pooled median
+        cell_medians = [st.median(diffs) for (env, _), diffs in cells.items()]
+        sign = 1 if st.median(pooled) > 0 else -1
+        agree = sum(1 for m in cell_medians if (m > 0) == (sign > 0))
+        return st.median(pooled), wilcoxon_p(pooled), len(pooled), f"{agree}/{len(cell_medians)} cells agree"
 
     for label, cells in (
+        ("naive beats vanilla feedback (M1)", paired(runs, "none_al", "fb_al")),
         ("BT pretraining beats MSE", paired(runs, "bt_al", "mse_al")),
         ("BT pretraining beats no pretraining", paired(runs, "bt_al", "none_al")),
         ("active learning helps (with prior)", paired(runs, "bt_al", "bt_noal")),
@@ -367,16 +408,17 @@ def verdict(runs):
         ("the data leak was inflating results", paired(runs, "bt_leak", "bt_al")),
         ("even true-label pretraining helps", paired(runs, "true_al", "none_al")),
     ):
-        median, p, n = med_all(cells)
+        median, p, n, agree = med_all(cells)
         if n == 0:
-            checks.append((label, "no data", float("nan"), 0))
+            checks.append((label, "no data", float("nan"), 0, ""))
             continue
         call = "YES" if (p == p and p < 0.05 and median > 0) else ("NO (worse)" if median < 0 and p == p and p < 0.05 else "no effect")
-        checks.append((label, call, median, n))
+        checks.append((label, call, median, n, agree))
 
-    for label, call, median, n in checks:
-        print(f"   {label:<40} {call:<12} pooled median={median:+9.2f}  n={n}")
-    print("\n   Pooled across envs and budgets - directional only. Trust the per-cell tables above.")
+    for label, call, median, n, agree in checks:
+        print(f"   {label:<40} {call:<12} {median:+6.2f} SD  n={n:<4} {agree}")
+    print("\n   Pooled across envs and budgets - directional only, and a pooled result with few")
+    print("   agreeing cells is one environment talking. Trust the per-cell tables above.")
 
 
 def main() -> int:
@@ -391,7 +433,7 @@ def main() -> int:
         return 1
 
     coverage(runs)
-    stages = {"E1": e1, "E2": e2, "E3": e3, "E4": e4, "E5": e5, "E6": e6, "E7": e7, "E8": e8}
+    stages = {"E0": e0, "E1": e1, "E2": e2, "E3": e3, "E4": e4, "E5": e5, "E6": e6, "E7": e7}
     for name, fn in stages.items():
         if args.only is None or name in args.only:
             fn(runs)
