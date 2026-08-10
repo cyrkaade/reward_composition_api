@@ -31,7 +31,7 @@ class OutputBatchNorm(th.nn.Module):
 
 
 class RewardModel(th.nn.Module):
-    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0, predict_partial=False, batchnorm_output=False, gate_partial=False, gate_init=0.5):
+    def __init__(self, input_size=10, hidden_sizes=(200,), learn_alpha=False, alpha_init=1.0, predict_partial=False, batchnorm_output=False, gate_partial=False, gate_init=0.5, tanh_output=False):
         super().__init__()
         layers = []
         last_size = input_size
@@ -52,10 +52,16 @@ class RewardModel(th.nn.Module):
             th.nn.init.zeros_(self.gate_head.weight)
             th.nn.init.constant_(self.gate_head.bias, bias)
         self.output_bn = OutputBatchNorm() if batchnorm_output else None
+        # PEBBLE / B-Pref bound the per-state reward with tanh INSIDE the model, so
+        # the bound shapes the Bradley-Terry loss landscape. Clipping in the reward
+        # wrapper (model_reward_min/max) happens after training and does not.
+        self.tanh_output = bool(tanh_output)
         self.alpha = th.nn.Parameter(th.tensor(float(alpha_init))) if learn_alpha else None
 
     def forward(self, x):
         out = self.head(self.trunk(x))
+        if self.tanh_output:
+            out = th.tanh(out)
         if self.output_bn is not None:
             out = self.output_bn(out)
         return out

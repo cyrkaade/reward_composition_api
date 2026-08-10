@@ -36,6 +36,7 @@ from .rewards.preferences import (
     query_fisher_information,
     reward_model_diagnostics,
     pretrain_reward_model,
+    pretrain_reward_model_bt,
     rate_pairs_from_true_reward,
     reward_model_io_stats,
     train_preference_reward_ensemble,
@@ -179,8 +180,9 @@ class RlhfTrainer:
 
         trajectories = self.collect_trajectories(round_index, collection_steps)
         self.update_partial_stats(trajectories)
-        self.maybe_pretrain_reward_model(trajectories)
-        self.add_query_pairs(trajectories, round_query_budget)
+        pretrain_trajectories, query_trajectories = self.split_for_pretraining(trajectories)
+        self.maybe_pretrain_reward_model(pretrain_trajectories)
+        self.add_query_pairs(query_trajectories, round_query_budget)
         self.maybe_train_reward_model()
         self.train_policy_round(round_index)
         if self.total_queries >= config.query_budget:
@@ -188,6 +190,24 @@ class RlhfTrainer:
 
     def _needs_pretraining(self) -> bool:
         return bool(self.config.pretrain_reward_model and not self.pretraining_done)
+
+    def split_for_pretraining(self, trajectories: list[Trajectory]) -> tuple[list[Trajectory], list[Trajectory]]:
+        """Keep pretraining and round-0 query collection on disjoint rollouts.
+
+        Without this the reward model is fit on exactly the states it is then
+        asked to express preferences about, which inflates the round-0 fit and
+        makes the cold-start claim ("a pretrained model selects better queries")
+        indistinguishable from "a pretrained model has memorised these states".
+        Round 0 already collects 2x collection_timesteps, so halving it leaves the
+        query supply at the same level every other round sees.
+        """
+        if not (self.config.pretrain_holdout and self._needs_pretraining()):
+            return trajectories, trajectories
+        cut = len(trajectories) // 2
+        if cut == 0:
+            return trajectories, trajectories
+        print(f"pretrain holdout: fitting on {cut} trajectories, querying from the other {len(trajectories) - cut}")
+        return trajectories[:cut], trajectories[cut:]
 
     def update_partial_stats(self, trajectories: list[Trajectory]) -> None:
         """Welford running mean/std over every partial-reward step seen so far,
@@ -209,19 +229,35 @@ class RlhfTrainer:
     def maybe_pretrain_reward_model(self, trajectories: list[Trajectory]) -> None:
         config = self.config
         if self._needs_pretraining():
-            print(f"pretraining reward model on {config.pretrain_target} target")
+            print(f"pretraining reward model on {config.pretrain_target} target with {config.pretrain_loss} loss")
             for model_index, reward_model in enumerate(self.reward_models):
                 if len(self.reward_models) > 1:
                     print(f"pretraining reward ensemble member {model_index + 1}/{len(self.reward_models)}")
-                pretrain_reward_model(
-                    reward_model,
-                    trajectories,
-                    self.convert_traj,
-                    target=config.pretrain_target,
-                    epochs=config.pretrain_epochs,
-                    batch_size=config.pretrain_batch_size,
-                    learning_rate=config.pretrain_lr,
-                )
+                if config.pretrain_loss == "bt":
+                    stats = pretrain_reward_model_bt(
+                        reward_model,
+                        trajectories,
+                        self.convert_traj,
+                        target=config.pretrain_target,
+                        epochs=config.pretrain_epochs,
+                        batch_size=config.pretrain_batch_size,
+                        learning_rate=config.pretrain_lr,
+                        fragment_length=config.fragment_length,
+                        max_pairs=config.pretrain_pairs,
+                        patience=config.pretrain_patience,
+                    )
+                    if stats and self.runtime.pretrain_stats is None:
+                        self.runtime.pretrain_stats = stats
+                else:
+                    pretrain_reward_model(
+                        reward_model,
+                        trajectories,
+                        self.convert_traj,
+                        target=config.pretrain_target,
+                        epochs=config.pretrain_epochs,
+                        batch_size=config.pretrain_batch_size,
+                        learning_rate=config.pretrain_lr,
+                    )
             self.pretraining_done = True
 
     def add_query_pairs(self, trajectories: list[Trajectory], round_query_budget: int) -> None:
@@ -440,6 +476,7 @@ def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel
             batchnorm_output=config.batchnorm_model_reward,
             gate_partial=config.gate_partial,
             gate_init=config.gate_init,
+            tanh_output=config.tanh_model_reward,
         )
         for _ in range(config.reward_model_ensemble_size)
     ]
@@ -747,6 +784,9 @@ class ExperimentRunner:
             "reward_model_ensemble_size": config.reward_model_ensemble_size if is_preference else None,
             "pretrain_reward_model": config.pretrain_reward_model if is_preference else None,
             "pretrain_target": config.pretrain_target if config.pretrain_reward_model else None,
+            "pretrain_loss": config.pretrain_loss if config.pretrain_reward_model else None,
+            "pretrain_holdout": config.pretrain_holdout if config.pretrain_reward_model else None,
+            "tanh_model_reward": config.tanh_model_reward if is_preference else None,
             "include_partial_feature": include_partial_feature(config) if is_preference else None,
             "normalize_partial_reward": config.normalize_partial_reward if is_preference else None,
             "partial_alpha": config.partial_alpha if is_preference else None,
@@ -784,6 +824,7 @@ class ExperimentRunner:
             "rm_diagnostics": runtime.rm_diagnostics,
             "rm_diagnostics_before_training": runtime.rm_diagnostics_before,
             "query_fisher": runtime.query_fisher,
+            "pretrain_stats": runtime.pretrain_stats,
             "reward_composition": runtime.composition,
         }
 

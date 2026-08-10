@@ -27,6 +27,9 @@ class Trajectory:
     def get_summed_reward(self):
         return sum(state["rew"] for state in self.states)
 
+    def get_summed_partial_reward(self):
+        return sum(state["partial_rew"] for state in self.states)
+
 
 @dataclass
 class Preference:
