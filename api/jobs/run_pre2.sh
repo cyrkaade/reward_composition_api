@@ -57,7 +57,9 @@ module load mamba
 source activate /scratch/work/akishea1/envs/rcomp
 cd /scratch/work/akishea1/reward_composition_api/api
 
-LINE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" jobs/params_pre2.txt)
+# tr -d '\r': the params file is generated on Windows, and a stray carriage
+# return would end up inside SEED, silently defeating the skip-completed check.
+LINE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" jobs/params_pre2.txt | tr -d '\r')
 read -r CELL VARIANT BUDGET SEED <<< "$LINE"
 
 case "$CELL" in
