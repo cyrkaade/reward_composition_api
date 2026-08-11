@@ -24,10 +24,25 @@ from pathlib import Path
 import numpy as np
 
 # Fraction of the env's time limit above which a policy is treated as refusing to
-# terminate. None = fixed horizon, so the concept does not apply.
-TIME_LIMIT = {"lunarlander": 1000, "walker2d": 1000, "pusher": None, "reacher": None}
+# terminate. None = the readout does not apply.
+#
+# WALKER2D IS DELIBERATELY None. It has a 1000-step limit, but terminating there
+# means FALLING, so running to the limit is what a good walker does -- measured
+# on this grid, spearman(ep_len_final, final return) = +0.908 on Walker2d against
+# -0.713 on LunarLander, and Walker runs at ep_len >= 950 have median return 5403
+# against 1400 below it. Scoring Walker with this metric reports a successful
+# walker as a failure. The farmable-limit concept needs terminating to be the
+# REWARDED outcome, which is true only on LunarLander here. For Walker the
+# analogous pathology is the survive-only local optimum (long episodes AND a
+# return near the +1/step healthy bonus); see survive_only() below.
+TIME_LIMIT = {"lunarlander": 1000, "walker2d": None, "pusher": None, "reacher": None}
 HOVER_FRAC = 0.95
+WALKER_LIMIT = 1000
 SOLVED = {"lunarlander": 200.0}          # envs with a conventional solved threshold
+# Whether the env can end an episode early. Kept separate from TIME_LIMIT: Walker2d
+# is variable-horizon but its limit is not farmable (see TIME_LIMIT above).
+HORIZON = {"lunarlander": "variable", "walker2d": "variable",
+           "pusher": "fixed", "reacher": "fixed"}
 ENV_ORDER = ["lunarlander", "walker2d", "pusher", "reacher"]
 GATE_BASELINE = "pre3g_ll_naive_bounded"  # gamma .999, output-L1 0
 
@@ -41,6 +56,14 @@ def hovering(env: str, ep_len: float | None) -> bool | None:
     if limit is None or ep_len is None:
         return None
     return ep_len >= HOVER_FRAC * limit
+
+
+def survive_only(env: str, ep_len: float | None, final: float | None) -> bool | None:
+    """Walker2d's analogue of hovering: never falls, but banks only the +1/step
+    healthy bonus instead of moving forward. Return near ep_len is the tell."""
+    if env != "walker2d" or ep_len is None or final is None:
+        return None
+    return ep_len >= HOVER_FRAC * WALKER_LIMIT and final <= 1.3 * ep_len
 
 
 def load(root: Path, pattern: str) -> list[dict]:
@@ -64,6 +87,8 @@ def load(root: Path, pattern: str) -> list[dict]:
             "final": float(rewards[-1]), "peak": float(rewards[best]),
             "ep_len_final": float(lengths[-1]), "ep_len_peak": float(lengths[best]),
             "hover": hovering(env, float(lengths[-1])),
+            "survive_only": survive_only(env, float(lengths[-1]), float(rewards[-1])),
+            "delivered": meta.get("synthetic_queries"),
         })
     return rows
 
@@ -197,7 +222,7 @@ def block_b(rows):
         if not seeds:
             continue
         d = [t[s]["final"] - p[s]["final"] for s in seeds]
-        horizon = "variable" if TIME_LIMIT.get(env) else "fixed"
+        horizon = HORIZON.get(env, "?")
         print(f"   {env:>12} {st.median(t[s]['final'] for s in seeds):>10.1f} "
               f"{st.median(p[s]['final'] for s in seeds):>10.1f} {st.median(d):>+10.1f}  {horizon:>10}  "
               f"{'qualifies' if st.median(d) > 0 else 'PREMISE FAILS'} "
@@ -304,12 +329,27 @@ def main() -> int:
     print("=" * 108)
     print(f"COVERAGE  {len(rows)}/480 runs complete")
     print("=" * 108)
-    by = defaultdict(int)
+    by = defaultdict(list)
     for r in rows:
-        by[(r["env"], r["variant"], r["budget"])] += 1
-    starved = [(k, v) for k, v in ((f"{r['env']}/{r['variant']}/q{r['budget']}", r["queries"])
-                                   for r in rows) if v is not None and v < 0.95 * float(k.split("q")[-1])]
-    print(f"   cells present: {len(by)}   query starvation: {'none' if not starved else starved[:5]}")
+        by[(r["env"], r["variant"], r["budget"])].append(r["delivered"])
+    print(f"   cells present: {len(by)}")
+    print("\n   LABEL DELIVERY -- a cell below 95% is NOT a matched-budget comparison.")
+    print("   Collection can only cut a fragment from an episode at least fragment_length")
+    print("   long, so an arm whose episodes are short silently buys fewer labels than it")
+    print("   asked for, and the deficit correlates with how badly that arm is doing.")
+    starved = []
+    for k in sorted(by, key=lambda k: (env_key(k[0]), k[1], k[2] or 0)):
+        q = [v for v in by[k] if v is not None]
+        if not q or not k[2]:
+            continue
+        frac = st.median(q) / float(k[2])
+        if frac < 0.95:
+            starved.append(k)
+        print(f"      {k[0]:>12} {k[1]:>16} q{k[2]:<5} delivered med={st.median(q):>6.0f} "
+              f"min={min(q):>5} ({100 * frac:5.1f}%){'   <== STARVED' if frac < 0.95 else ''}")
+    if starved:
+        print(f"\n   {len(starved)} starved cell(s). Read every comparison touching them as")
+        print("   naive-with-more-labels vs feedback-with-fewer, not as equal budgets.")
 
     stages = {"A": lambda: block_a(rows, gate), "B": lambda: block_b(rows), "C": lambda: block_c(rows),
               "D": lambda: block_d(rows), "E": lambda: block_e(rows), "F": lambda: block_f(rows, gate)}
