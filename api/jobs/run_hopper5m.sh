@@ -5,7 +5,7 @@
 #SBATCH --time=36:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
-#SBATCH --array=1-20
+#SBATCH --array=1-40
 #SBATCH --requeue
 
 # Hopper-v5 on the GROUND-TRUTH reward: our preset vs SB3 out-of-the-box.
@@ -72,13 +72,25 @@ fi
 # *_partial variants use it.
 PARTIAL=hopper_capped_forward_survive
 
+# NORM is the VecNormalize column. 'auto' is what every archived run used and
+# what the MuJoCo suite decides on its own (always on); 'off' removes the
+# wrapper, which is the only way to run SB3 defaults literally out-of-the-box.
 case "$VARIANT" in
-  ours)          MODE=true;    TUNED="--tuned-hyperparams" ;;
-  stock)         MODE=true;    TUNED="" ;;
-  ours_partial)  MODE=partial; TUNED="--tuned-hyperparams" ;;
-  stock_partial) MODE=partial; TUNED="" ;;
+  ours)          MODE=true;    TUNED="--tuned-hyperparams"; NORM=auto ;;
+  stock)         MODE=true;    TUNED="";                    NORM=auto ;;
+  ours_nonorm)   MODE=true;    TUNED="--tuned-hyperparams"; NORM=off  ;;
+  stock_nonorm)  MODE=true;    TUNED="";                    NORM=off  ;;
+  ours_partial)  MODE=partial; TUNED="--tuned-hyperparams"; NORM=auto ;;
+  stock_partial) MODE=partial; TUNED="";                    NORM=auto ;;
   *) echo "unknown variant: $VARIANT" >&2; exit 2 ;;
 esac
+
+# Fail loudly if the installed package predates --env-normalize, rather than
+# running 40 silently-normalized jobs and calling them an ablation.
+if ! python -m rcomp train --help 2>&1 | grep -q -- "--env-normalize"; then
+  echo "this rcomp has no --env-normalize; git pull and reinstall before submitting" >&2
+  exit 2
+fi
 
 LOGDIR="logs/hop5m_${VARIANT}"
 RUNNAME="hopper_${VARIANT}_seed${SEED}"
@@ -93,6 +105,7 @@ ARGS=(
   --partial "$PARTIAL"
   --timesteps 5000000
   --n-envs 1
+  --env-normalize "$NORM"
   --seed "$SEED"
   --final-policy last
   --eval-freq 50000
@@ -104,5 +117,5 @@ if [ -n "$TUNED" ]; then
   ARGS+=("$TUNED")
 fi
 
-echo "=== ${RUNNAME} (variant=${VARIANT} mode=${MODE} tuned='${TUNED}') ==="
+echo "=== ${RUNNAME} (variant=${VARIANT} mode=${MODE} tuned='${TUNED}' normalize=${NORM}) ==="
 python -m rcomp train "${ARGS[@]}"

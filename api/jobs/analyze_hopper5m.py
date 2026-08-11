@@ -29,8 +29,10 @@ import numpy as np
 # label -> log directory. The archived rows are references, not the comparison:
 # they ran at n_envs=8 and are marked so nobody reads the gap as hyperparameters.
 ARMS = [
-    ("ours (preset)", "hop5m_ours", "n_envs 1, 5M"),
-    ("stock SB3", "hop5m_stock", "n_envs 1, 5M"),
+    ("ours (preset)", "hop5m_ours", "n_envs 1, 5M, VecNormalize ON"),
+    ("stock SB3", "hop5m_stock", "n_envs 1, 5M, VecNormalize ON"),
+    ("ours, no norm", "hop5m_ours_nonorm", "n_envs 1, 5M, VecNormalize OFF"),
+    ("stock, no norm", "hop5m_stock_nonorm", "n_envs 1, 5M, VecNormalize OFF - literally out-of-the-box"),
     ("ours + partial", "hop5m_ours_partial", "n_envs 1, 5M"),
     ("stock + partial", "hop5m_stock_partial", "n_envs 1, 5M"),
     ("[archive] stock", "base_hopper_true", "n_envs 8, 5M - reference only"),
@@ -139,22 +141,39 @@ def main() -> None:
         if stuck:
             print(f"   NOTE: {stuck}/{len(rows)} seeds never left the survive-only optimum (peak < 1200)")
 
-    if "ours (preset)" in collected and "stock SB3" in collected:
-        ours, stock = collected["ours (preset)"], collected["stock SB3"]
-        print("\n=== HEAD TO HEAD (medians, equal n_envs and budget)")
+    def head_to_head(label_a, label_b, title):
+        if label_a not in collected or label_b not in collected:
+            return
+        a_rows, b_rows = collected[label_a], collected[label_b]
+        print(f"\n=== {title}")
         for field, digits in (("final", 0), ("peak", 0), ("drawdown", 1)):
-            a, b = median([r[field] for r in ours]), median([r[field] for r in stock])
-            gap = a - b
-            print(f"   {field:>10}   ours {a:>9,.{digits}f}   stock {b:>9,.{digits}f}   gap {gap:>+9,.{digits}f}")
+            a, b = median([r[field] for r in a_rows]), median([r[field] for r in b_rows])
+            print(
+                f"   {field:>10}   {label_a:>15} {a:>9,.{digits}f}"
+                f"   {label_b:>15} {b:>9,.{digits}f}   gap {a - b:>+9,.{digits}f}"
+            )
         for index, checkpoint in enumerate(checkpoints):
-            a = median([r["at"][index] for r in ours])
-            b = median([r["at"][index] for r in stock])
+            a = median([r["at"][index] for r in a_rows])
+            b = median([r["at"][index] for r in b_rows])
             if a is None or b is None:
                 continue
-            print(f"   @{checkpoint / 1e6:>8g}M   ours {a:>9,.0f}   stock {b:>9,.0f}   gap {a - b:>+9,.0f}")
+            print(
+                f"   @{checkpoint / 1e6:>8g}M   {label_a:>15} {a:>9,.0f}"
+                f"   {label_b:>15} {b:>9,.0f}   gap {a - b:>+9,.0f}"
+            )
+
+    # The primary question, then the same question without the wrapper, then the
+    # wrapper's own effect within each config.
+    head_to_head("ours (preset)", "stock SB3", "HEAD TO HEAD, normalized (equal n_envs and budget)")
+    head_to_head("ours, no norm", "stock, no norm", "HEAD TO HEAD, NOT normalized")
+    head_to_head("ours (preset)", "ours, no norm", "DOES NORMALIZATION MATTER? (our preset)")
+    head_to_head("stock SB3", "stock, no norm", "DOES NORMALIZATION MATTER? (SB3 defaults)")
+
+    if collected:
         print(
             "\n   Exact one-sided Wilcoxon on 10 paired seeds bottoms out at p=0.00098;"
             "\n   with unpaired arms use Mann-Whitney. A gap inside the seed spread is not a result."
+            "\n   Hopper is bimodal - read the survive-only seed counts above before the medians."
         )
 
     if not collected:

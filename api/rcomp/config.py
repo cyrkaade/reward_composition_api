@@ -35,6 +35,7 @@ ACTIVE_CANDIDATE_PROTOCOLS = ("matching", "pool")
 ROUND0_DATA_PROTOCOLS = ("legacy", "separate", "overlap")
 REWARD_MODEL_LOSS_REDUCTIONS = ("sum", "mean")
 ENSEMBLE_TRAINING_MODES = ("kfold", "full")
+ENV_NORMALIZE_MODES = ("auto", "on", "off")
 
 
 def _f(default, help: str, **meta):
@@ -86,6 +87,16 @@ class ExperimentConfig:
     dedicated_query_rng: bool = _f(
         False,
         "Use a deterministic per-round Python RNG for query pairing/candidate matchings so reward-training and pretraining shuffles cannot change which pairs are considered",
+    )
+
+    env_normalize: str = _f(
+        "auto",
+        "Whether to wrap the training env in VecNormalize (obs + reward): 'auto' asks the suite "
+        "(MuJoCo always on, Box2D on for 1-D Box spaces), 'on'/'off' force it. Evaluation ALWAYS "
+        "scores raw reward, so this changes what the policy trains on, not how it is measured. "
+        "Off makes an SB3-defaults arm literally out-of-the-box; note the rl-zoo MuJoCo blocks "
+        "assume normalize: True, so forcing it off changes what a tuned preset was tuned for",
+        choices=ENV_NORMALIZE_MODES,
     )
 
     reward_hidden_sizes: tuple[int, ...] = _f((200,), "Reward model hidden sizes, e.g. '200' or '64,64'", parse="int_tuple")
@@ -297,6 +308,12 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError(f"Unsupported {config.suite} env '{config.env_id}'. Try `list-envs --suite {config.suite}` for available envs.")
     if config.mode not in TRAIN_MODES:
         raise ConfigError(f"Unsupported mode '{config.mode}'. Supported modes: {', '.join(TRAIN_MODES)}")
+    # Checked here, not only by argparse: a typo would otherwise fall through
+    # the `mode == "on"` test in probe_spaces and SILENTLY disable normalization.
+    if config.env_normalize not in ENV_NORMALIZE_MODES:
+        raise ConfigError(
+            f"Unsupported env_normalize '{config.env_normalize}'. Supported: {', '.join(ENV_NORMALIZE_MODES)}"
+        )
     if config.mode in PARTIAL_REQUIRED_MODES and not config.partial:
         raise ConfigError(f"Mode '{config.mode}' requires --partial with a manually written partial reward.")
     if config.normalize_partial_reward and config.mode not in ("naive", "delta"):

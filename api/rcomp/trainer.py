@@ -609,6 +609,9 @@ class ExperimentRunner:
             variant_name=config.variant_name or config.mode,
         )
         self.custom_partial = resolve_custom_partial(self.config)
+        # Resolved in probe_spaces(); recorded in metadata so a run says what it
+        # actually did rather than only what was asked for.
+        self.normalize_applied: bool | None = None
 
     @property
     def run_dir(self) -> Path:
@@ -627,7 +630,15 @@ class ExperimentRunner:
         probe_env = self.suite.make_raw_env(self.config.env_id)
         observation_space = probe_env.observation_space
         action_space = probe_env.action_space
-        normalize = self.suite.should_normalize_observation(observation_space)
+        # 'auto' keeps the suite's decision, which is what every archived run
+        # used; 'on'/'off' override it so normalization can be held equal (or
+        # removed) across arms of a comparison.
+        mode = getattr(self.config, "env_normalize", "auto")
+        if mode == "auto":
+            normalize = self.suite.should_normalize_observation(observation_space)
+        else:
+            normalize = mode == "on"
+        self.normalize_applied = normalize
         hyperparams = self.suite.ppo_hyperparams(self.config, probe_env)
         probe_env.close()
         return observation_space, action_space, normalize, hyperparams
@@ -886,6 +897,10 @@ class ExperimentRunner:
             "collection_timesteps": config.collection_timesteps,
             "policy_learning_kwargs": config.policy_learning_kwargs or {},
             "tuned_hyperparams": config.tuned_hyperparams,
+            "env_normalize": config.env_normalize,
+            # What the suite/flag actually resolved to, so archived runs (which
+            # predate the flag and all record "auto") stay readable.
+            "env_normalize_applied": self.normalize_applied,
             "synthetic_queries": synthetic_queries,
             "query_budget": config.query_budget if is_preference else 0,
             "fragment_length": config.fragment_length if is_preference else None,
