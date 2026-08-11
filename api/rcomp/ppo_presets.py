@@ -147,14 +147,18 @@ PRESETS: dict[str, dict[str, Any]] = {
         "suite": "mujoco",
         "tuned": True,
         "source": (
-            "gSDE paper (arXiv 2005.05719, Raffin/Kober/Stulp) PPO block, minus gSDE itself, "
-            "with SB3-default policy_kwargs. NOT the rl-zoo Hopper-v4 block - that one does "
-            "not work here, see note."
+            "Supplied by the project owner from their own Hopper-v5 runs (2026-08-11); "
+            "the values coincide with the gSDE paper's PPO block (arXiv 2005.05719, "
+            "Raffin/Kober/Stulp) minus gSDE itself, with SB3-default policy_kwargs. "
+            "NOT the rl-zoo Hopper-v4 block - that one does not work here, see note."
         ),
         "benchmark": (
             "measured here on Hopper-v5, 3 seeds x 1M, n_envs=1, --final-policy last: "
             "median peak 2995, median final 2127, median drawdown 35%. "
-            "rl-zoo reports PPO 2410 +/- 10 @1M (Hopper-v3); SAC 2326, TQC 3754"
+            "rl-zoo reports PPO 2410 +/- 10 @1M (Hopper-v3); SAC 2326, TQC 3754. "
+            "CAUTION: 1M is NOT where stock SB3 peaks - stock's median peak is at 3.45M "
+            "(3532), so any ours-vs-stock claim read off a 1M budget is unfair to stock. "
+            "jobs/run_hopper5m.sh runs both at 5M and equal n_envs to settle it."
         ),
         "reference": {"n_envs": 1, "n_timesteps": 1_000_000, "normalize": True},
         "note": (
