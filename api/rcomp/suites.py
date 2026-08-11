@@ -141,12 +141,23 @@ class Suite:
         default behaviour (and therefore comparability with the archived runs)
         is unchanged.
         """
+        from .ppo_presets import resolve_activation_fn
+
         hyperparams = self.default_ppo_hyperparams(config, probe_env)
         if getattr(config, "tuned_hyperparams", False):
             from .ppo_presets import tuned_ppo_hyperparams
 
             hyperparams.update(tuned_ppo_hyperparams(config.env_id))
         hyperparams.update(deepcopy(config.policy_learning_kwargs or {}))
+
+        # --policy-learning-kwargs arrives as JSON, so activation_fn can only be a
+        # name. SB3 needs the class, and passing the string fails deep inside the
+        # policy constructor with an unhelpful error.
+        policy_kwargs = hyperparams.get("policy_kwargs")
+        if isinstance(policy_kwargs, dict) and isinstance(policy_kwargs.get("activation_fn"), str):
+            policy_kwargs = dict(policy_kwargs)
+            policy_kwargs["activation_fn"] = resolve_activation_fn(policy_kwargs["activation_fn"])
+            hyperparams["policy_kwargs"] = policy_kwargs
         return hyperparams
 
     def default_ppo_hyperparams(self, config, probe_env: gym.Env) -> dict[str, Any]:

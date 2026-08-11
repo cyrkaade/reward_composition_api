@@ -80,6 +80,7 @@ __all__ = [
     "preset_key",
     "lookup_preset",
     "resolve_ppo_preset",
+    "resolve_activation_fn",
     "tuned_ppo_hyperparams",
     "describe_presets",
 ]
@@ -658,7 +659,7 @@ def lookup_preset(env_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _resolve_activation(name: str):
+def resolve_activation_fn(name: str):
     from torch import nn
 
     activations = {
@@ -706,7 +707,7 @@ def resolve_ppo_preset(preset: dict[str, Any], *, warn_on_schedule: bool = True)
     policy_kwargs = resolved.get("policy_kwargs")
     if isinstance(policy_kwargs, dict) and isinstance(policy_kwargs.get("activation_fn"), str):
         policy_kwargs = dict(policy_kwargs)
-        policy_kwargs["activation_fn"] = _resolve_activation(policy_kwargs["activation_fn"])
+        policy_kwargs["activation_fn"] = resolve_activation_fn(policy_kwargs["activation_fn"])
         resolved["policy_kwargs"] = policy_kwargs
 
     return resolved
