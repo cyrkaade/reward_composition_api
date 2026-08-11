@@ -159,8 +159,33 @@ if [ -f "${LOGDIR}/${RUNNAME}/metadata.json" ]; then
 fi
 
 # Block F swaps the partial; everything else uses the environment's default one.
+# MUST be the file:name form. `--partial` resolves as a MODULE name, and
+# lunarlander_p50 lives inside partials/lunar_lander_levels.py alongside p25 and
+# p75, so the bare name dies at startup with "No module named 'lunarlander_p50'".
+# The other four partials happen to sit in files named after themselves, which is
+# why only this variant was affected -- and why the first submission produced ten
+# instant failures and no runs. `rcomp list-partials` prints the bare name because
+# it scans every file in partials/, so it is NOT a check that --partial will work.
 if [ "$VARIANT" = "naive_p50" ]; then
-  PARTIAL=lunarlander_p50
+  PARTIAL=lunar_lander_levels:lunarlander_p50
+fi
+
+# Resolve the partial before burning a queue slot. This is the exact call the
+# trainer makes, so it catches the file:name mistake above. NOT `rcomp
+# validate-partial`: that feeds a 4-element dummy observation and so fails on
+# every 8-dim LunarLander partial, including the four that work.
+if ! python -c "
+import sys
+from rcomp.partials import PartialRegistry, load_partial_reference
+try:
+    load_partial_reference('$PARTIAL', '$SUITE', PartialRegistry())
+except Exception as exc:
+    print(f'{type(exc).__name__}: {exc}', file=sys.stderr)
+    sys.exit(1)
+"; then
+  echo "partial '$PARTIAL' does not resolve for suite $SUITE" >&2
+  echo "multi-partial files must be referenced as file:name" >&2
+  exit 2
 fi
 
 ARGS=(
