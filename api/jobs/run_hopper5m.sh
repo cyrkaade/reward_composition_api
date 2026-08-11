@@ -5,7 +5,7 @@
 #SBATCH --time=36:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
-#SBATCH --array=1-40
+#SBATCH --array=1-20
 #SBATCH --requeue
 
 # Hopper-v5 on the GROUND-TRUTH reward: our preset vs SB3 out-of-the-box.
@@ -72,9 +72,13 @@ fi
 # *_partial variants use it.
 PARTIAL=hopper_capped_forward_survive
 
-# NORM is the VecNormalize column. 'auto' is what every archived run used and
-# what the MuJoCo suite decides on its own (always on); 'off' removes the
-# wrapper, which is the only way to run SB3 defaults literally out-of-the-box.
+# NORM is the VecNormalize column. As submitted, BOTH arms use 'auto' - what
+# every archived run used, and what the MuJoCo suite decides on its own (always
+# on). Since both arms get it identically, ours-vs-stock is a fair test either
+# way, and 'auto' matches what the rl-zoo MuJoCo family was tuned under.
+# The *_nonorm variants exist for the separate question of whether the wrapper
+# itself matters; they are not in params_hopper5m.txt. Note that with 'off' the
+# stock arm becomes literally out-of-the-box SB3, which 'auto' is not.
 case "$VARIANT" in
   ours)          MODE=true;    TUNED="--tuned-hyperparams"; NORM=auto ;;
   stock)         MODE=true;    TUNED="";                    NORM=auto ;;
@@ -86,7 +90,7 @@ case "$VARIANT" in
 esac
 
 # Fail loudly if the installed package predates --env-normalize, rather than
-# running 40 silently-normalized jobs and calling them an ablation.
+# ignoring the flag and mislabelling what the run actually did.
 if ! python -m rcomp train --help 2>&1 | grep -q -- "--env-normalize"; then
   echo "this rcomp has no --env-normalize; git pull and reinstall before submitting" >&2
   exit 2

@@ -48,9 +48,14 @@ def add(variants, seeds=SEEDS):
             lines.append(f"{variant} {seed}")
 
 
-# Ordered arm-major so that a partially-finished array still yields whole cells,
-# and normalized-first so the primary question lands before the ablation.
-add(("ours", "stock", "ours_nonorm", "stock_nonorm"))
+# Ordered arm-major so that a partially-finished array still yields whole cells.
+add(("ours", "stock"))
+
+# The no-normalize column. NOT submitted: both arms above are normalized
+# identically, so the ours-vs-stock comparison is already fair, and this only
+# answers the separate question of whether the wrapper itself matters. Enable
+# and bump run_hopper5m.sh's --array to 1-40 if that becomes worth 20 runs.
+# add(("ours_nonorm", "stock_nonorm"))
 
 # The pending E0 question - does the partial beat the true reward once the true
 # arm can actually learn? - at the same budget. 20 more runs.
