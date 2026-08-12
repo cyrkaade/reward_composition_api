@@ -144,6 +144,21 @@ class ExperimentConfig:
     gate_prior_penalty: float = _f(0.0, "Weight of a penalty pulling g toward 1, so shrinking the partial requires evidence from the preferences")
     gate_diagnostic: bool = _f(False, "Record the rank correlation between the gate g(s,a) and the partial's error |partial - true reward| (negative = the gate distrusts the partial where it is wrong)")
     reward_model_diagnostics: bool = _f(False, "Record Bradley-Terry loss and ranking accuracy on held-out preferences, before and after preference training, and with the partial input feature ablated (measures how much the model relies on that feature)")
+    holdout_pairs: int = _f(
+        0,
+        "Reserve this many preference pairs per round as a TRUE held-out diagnostic set: they come from "
+        "trajectories no query is drawn from, are never trained on by any ensemble member, and are scored "
+        "before and after each round's training. This is an oracle diagnostic for the experimenter and is "
+        "NOT charged to --query-budget (0 disables). Fixes the fact that ensemble_training=full leaves "
+        "n_val_pairs=0 and kfold's 'held-out' fold was still trained on by the other members.",
+    )
+    ensemble_bootstrap: bool = _f(
+        False,
+        "Give each reward-ensemble member its own bootstrap resample (draw N pairs with replacement from the "
+        "N collected pairs) instead of the identical buffer. B-Pref gives every member the same data in a "
+        "different order, which lets members converge to the same function once training accuracy saturates; "
+        "disagreement-based active learning then has nothing to measure. Requires --ensemble-training full.",
+    )
     save_reward_model: bool = _f(False, "Save the trained reward model weights to reward_model.pt for offline analysis")
     query_fisher_diagnostic: bool = _f(False, "Record the Bradley-Terry Fisher information of the queries active learning selected each round (how much the answers are expected to pin down the reward parameters)")
 
@@ -408,6 +423,17 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("pretrain_bt_tie_margin must be non-negative")
     if config.pretrain_patience <= 0:
         raise ConfigError("pretrain_patience must be greater than zero")
+    if config.holdout_pairs < 0:
+        raise ConfigError("holdout_pairs must be non-negative")
+    if config.holdout_pairs and config.mode not in PREFERENCE_MODES:
+        raise ConfigError("holdout_pairs requires a preference mode (feedback/naive/delta)")
+    if config.ensemble_bootstrap and config.reward_model_ensemble_size <= 1:
+        raise ConfigError("ensemble_bootstrap requires reward_model_ensemble_size > 1")
+    if config.ensemble_bootstrap and config.ensemble_training != "full":
+        raise ConfigError(
+            "ensemble_bootstrap resamples the full buffer per member, so it requires "
+            "--ensemble-training full (kfold already gives members different data)"
+        )
     if config.tanh_model_reward and config.batchnorm_model_reward:
         raise ConfigError("tanh_model_reward and batchnorm_model_reward are mutually exclusive")
     if config.tanh_model_reward and config.mode not in PREFERENCE_MODES:

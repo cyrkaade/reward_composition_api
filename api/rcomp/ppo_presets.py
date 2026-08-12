@@ -30,6 +30,26 @@ inside :meth:`rcomp.suites.Suite.ppo_hyperparams` is::
 
 Inspect what a run would use with ``python -m rcomp list-presets [--env-id X]``.
 
+NO ZOO BLOCK IN THIS FILE WAS TUNED ON A v5 ENVIRONMENT
+-------------------------------------------------------
+Verified against ``hyperparams/ppo.yml`` on 2026-08-12: the zoo's MuJoCo entries
+are keyed ``-v2``/``-v3``/``-v4``, and its benchmark table reports ``-v3`` scores.
+There is no published PPO block tuned on any ``-v5`` environment. Every MuJoCo
+preset here is therefore a v2/v4 block applied to v5, which matters because v5
+changed reward code, not just plumbing:
+
+- **Pusher-v5 fixed a reward bug.** ``reward_dist`` and ``reward_near`` were
+  computed from the state *before* the physics step and are now computed after.
+  v5 also fixed ``info["reward_ctrl"]`` not being multiplied by its weight and
+  added ``info["reward_near"]``. ``partials/pusher_honest.py`` reads those two
+  keys, so it is correct on v5 and would have been wrong on v4.
+- **Reacher-v5** carries the same reward-timing fix, so the Reacher-v2 block in
+  this file was tuned against a different reward function than the one it runs.
+
+Neither is fatal - Pusher and Reacher both converge cleanly here with tight true
+arms (Pusher -26.0..-21.9, Reacher -4.4..-3.3 over 10 seeds, 0 failures) - but a
+paper should say "rl-zoo's v4 block applied to v5", not "tuned for v5".
+
 FOUR THINGS TO KNOW BEFORE RELYING ON A PRESET
 ----------------------------------------------
 1. ``reference`` is NOT applied, and ON HOPPER THAT BROKE THE RUN (measured
@@ -145,57 +165,45 @@ PRESETS: dict[str, dict[str, Any]] = {
     # ---------------------------------------------------------------- MuJoCo
     "Hopper": {
         "suite": "mujoco",
-        "tuned": True,
+        "tuned": False,
         "source": (
-            "Supplied by the project owner from their own Hopper-v5 runs (2026-08-11); "
-            "the values coincide with the gSDE paper's PPO block (arXiv 2005.05719, "
-            "Raffin/Kober/Stulp) minus gSDE itself, with SB3-default policy_kwargs. "
-            "NOT the rl-zoo Hopper-v4 block - that one does not work here, see note."
+            "SB3 defaults. Neither the rl-zoo Hopper-v4 block nor a gSDE-derived "
+            "replacement beat them on Hopper-v5; see note. Kept explicit so the flag is "
+            "inert here instead of silently degrading the run."
         ),
         "benchmark": (
-            "measured here on Hopper-v5, 3 seeds x 1M, n_envs=1, --final-policy last: "
-            "median peak 2995, median final 2127, median drawdown 35%. "
-            "rl-zoo reports PPO 2410 +/- 10 @1M (Hopper-v3); SAC 2326, TQC 3754. "
-            "CAUTION: 1M is NOT where stock SB3 peaks - stock's median peak is at 3.45M "
-            "(3532), so any ours-vs-stock claim read off a 1M budget is unfair to stock. "
-            "jobs/run_hopper5m.sh runs both at 5M and equal n_envs to settle it."
+            "measured here on Hopper-v5, 10 seeds x 5M, n_envs=1, VecNormalize on, "
+            "--final-policy last (logs/hop5m_stock): median peak 3369, median final 1410, "
+            "median drawdown 56%. rl-zoo reports PPO 2410 +/- 10 @1M (Hopper-v3); "
+            "SAC 2326, TQC 3754. Hopper is EXCLUDED from the paper - its true arm collapses "
+            "under every configuration measured."
         ),
-        "reference": {"n_envs": 1, "n_timesteps": 1_000_000, "normalize": True},
+        "reference": {"n_envs": 1, "n_timesteps": 5_000_000, "normalize": True},
         "note": (
-            "REPLACED 2026-08-11 after the rl-zoo Hopper-v4 block failed outright. That block "
-            "(n_steps 512, lr 9.8e-5, gamma .999, gae .99, clip .2, n_epochs 5, ReLU, "
-            "log_std_init -2, ortho_init False) pins Hopper-v5 at the survive-only local "
-            "optimum: ~1000 reward, episode length 1000, total reward_forward 1.0, i.e. the "
-            "agent stands still and banks the +1/step healthy bonus. It never escapes, at "
-            "n_envs 1 or 8, out to 560k steps. Single-variable ablations rescued NOTHING - "
-            "n_envs 1 (989 @260k), gamma 0.99 (1026 @300k), n_epochs 20 (980 @140k), "
-            "log_std_init 0 (1012 @300k) all stay on the plateau, so the block is mismatched "
-            "in several ways at once and bisecting further was not worth the compute. "
-            "The config below escapes it immediately and is what is used instead. "
-            "log_std_init is load-bearing: forcing -2 onto THIS config collapses it from 2835 "
-            "to 452 by 160k, because the gSDE paper only gets away with -2 by supplying "
-            "state-dependent exploration noise that we do not use. "
-            "CAVEAT: this fixes learning, NOT stability. Hopper collapses late under every "
-            "config tried - stock SB3 20% drawdown, this one 35% median with one seed of "
-            "three losing 84%. Hopper cannot carry a claim about reward-model "
+            "REVERTED TO SB3 DEFAULTS 2026-08-12. Two configs have now been tried and both lost. "
+            "(a) The rl-zoo Hopper-v4 block (n_steps 512, lr 9.8e-5, gamma .999, gae .99, "
+            "n_epochs 5, ReLU, log_std_init -2, ortho_init False) pins Hopper-v5 at the "
+            "survive-only local optimum: ~1000 reward, episode length 1000, total "
+            "reward_forward 1.0 - the agent stands still and banks the +1/step healthy bonus, "
+            "at n_envs 1 or 8, out to 560k. Four single-variable rescues all failed. "
+            "(b) The gSDE-derived replacement (arXiv 2005.05719 minus gSDE: n_steps 512, "
+            "batch 32, lr 3e-5, clip .4, clip_range_vf .5, n_epochs 20, gae .9, SB3-default "
+            "policy_kwargs) looked good on a 3-seed x 1M pilot (peak 2995, final 2127) but "
+            "was measured head-to-head against stock at 10 seeds x 5M, matched n_envs=1 and "
+            "normalization (logs/hop5m_*): it LOSES. Peak 2390 vs 3369 (stock wins 9/10 "
+            "seeds, exact p=0.004); final 381 vs 1410 (p=0.037); drawdown 76% vs 56%; 2 of 10 "
+            "seeds never left the survive-only optimum. The 1M pilot was measuring the wrong "
+            "budget - stock's median peak is at 525k-3.45M depending on n_envs, so a 1M "
+            "readout flattered the preset. Restoring SB3 defaults makes --tuned-hyperparams "
+            "a no-op on Hopper rather than an active regression. "
+            "SEPARATELY: Hopper's TRUE arm collapses under every config tried - 20% drawdown "
+            "for stock at n_envs 8, 56% for stock at n_envs 1, 76% for the gSDE config, and "
+            "the rl-zoo block never learns. PPO on the ground-truth reward is unstable here "
+            "regardless of hyperparameters, which is an environment property, not a setup "
+            "bug. Hopper therefore cannot carry any claim about reward-model "
             "overoptimization; always report peak next to final."
         ),
-        "ppo": {
-            "policy": "MlpPolicy",
-            "n_steps": 512,
-            "batch_size": 32,
-            "gamma": 0.99,
-            "learning_rate": 3e-5,
-            "ent_coef": 0.0,
-            "clip_range": 0.4,
-            "clip_range_vf": 0.5,
-            "n_epochs": 20,
-            "gae_lambda": 0.9,
-            # SB3 defaults on purpose: Tanh, ortho_init True, log_std_init 0.
-            # log_std_init 0 (action std 1.0 vs 0.135 at -2) is what keeps Hopper
-            # out of the standing-still optimum - see note.
-            "policy_kwargs": {"net_arch": [256, 256]},
-        },
+        "ppo": deepcopy(_SB3_DEFAULT_PPO),
     },
     "Walker2d": {
         "suite": "mujoco",
@@ -235,9 +243,21 @@ PRESETS: dict[str, dict[str, Any]] = {
         "benchmark": "PPO 5819 +/- 664 @ 1M (HalfCheetah-v3)",
         "reference": {"n_envs": 1, "n_timesteps": 1_000_000, "normalize": True},
         "note": (
-            "Bimodal in this project regardless of hyperparameters: ~45% of seeds "
-            "learn to run and the rest do not, with nothing between. Medians report "
-            "which mode the middle seed hit. Prefer Reacher."
+            "CANDIDATE, NOT YET QUALIFIED - pilot before building a grid on it. "
+            "HalfCheetah-v5 never terminates (fixed 1000-step episodes, verified), which "
+            "is the low-variance property Walker2d and Hopper lack, and its partial "
+            "(partials/halfcheetah_forward.py = reward_forward, dropping a 0.1-weight "
+            "control cost on 6 actuators) has the same shape as pusher_honest, the only "
+            "prior in this project that is genuinely incomplete. Dynamic range is large "
+            "(~-300 untrained to ~5800), unlike Reacher's 2.4 units. "
+            "THE KNOWN RISK is bimodality: ~45% of seeds learn to run (~5000) and the rest "
+            "do not (~1800), with nothing between, so a median just reports which mode the "
+            "middle seed hit. But that was measured on STOCK SB3 - an audit on 2026-08-12 "
+            "found all 399 archived HalfCheetah runs have tuned_hyperparams unset, and NOT "
+            "ONE of them is a mode=true run. The block below has never been tried here and "
+            "there is no ground-truth baseline to compare against. Run 5 seeds of mode=true "
+            "and 5 of mode=partial first: if the true arm is unimodal it is the best "
+            "remaining environment; if it splits, drop it the way Walker2d was dropped."
         ),
         "ppo": {
             "policy": "MlpPolicy",
@@ -334,6 +354,24 @@ PRESETS: dict[str, dict[str, Any]] = {
         "source": "rl-zoo ppo.yml Swimmer-v4",
         "benchmark": "PPO 282 +/- 10 @ 1M (Swimmer-v3)",
         "reference": {"n_envs": 4, "n_timesteps": 1_000_000, "normalize": True},
+        "note": (
+            "CANDIDATE, NOT YET QUALIFIED. Swimmer-v5 is the only environment available "
+            "here that CANNOT terminate at all - it always runs the full 1000 steps "
+            "(verified), so none of the Walker2d/Hopper failure modes (early termination, "
+            "bimodal ceilings, episode-length farming, fragment starvation) are even "
+            "expressible. That makes it the lowest-variance option in the suite. "
+            "GAMMA 0.9999 IS LOAD-BEARING, not a tuning detail: Swimmer's forward reward "
+            "per step is tiny and the credit for a stroke arrives many steps later, so at "
+            "gamma 0.99 (effective horizon 100 of 1000 steps) PPO does not learn to swim. "
+            "Do not override it, and do not copy this preset's gamma to any other entry. "
+            "A 'delete the control cost' partial does NOT work here - ctrl_cost_weight is "
+            "1e-4, so true-minus-cost is effectively the true reward. Use a direction-blind "
+            "partial instead: sqrt(obs[3]^2 + obs[4]^2), the SPEED of the front tip rather "
+            "than its x-velocity. Measured on 400 random steps, that correlates 0.23 with "
+            "reward_forward while obs[3] alone correlates 0.97 - it rewards swimming fast "
+            "in the wrong direction, which is a genuinely incomplete prior and the mistake "
+            "a human designer actually makes."
+        ),
         "ppo": {
             "policy": "MlpPolicy",
             "n_steps": 1024,

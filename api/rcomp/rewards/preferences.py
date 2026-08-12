@@ -344,6 +344,61 @@ def choose_query_pairs(
     )
 
 
+def split_holdout_trajectories(
+    trajectories: list[Trajectory],
+    pair_count: int,
+    fragment_length: int,
+    rng: random.Random,
+) -> tuple[list[Trajectory], list[Trajectory]]:
+    """Reserve whole trajectories for a diagnostic set no query is ever drawn from.
+
+    Splitting at the TRAJECTORY level rather than the fragment level matters: two
+    fragments cut from the same episode share its initial state and policy, so a
+    fragment-level split would leave the diagnostic set correlated with training.
+    Returns ``(query_trajectories, holdout_trajectories)``; the holdout is empty
+    when ``pair_count`` is zero or nothing can be spared.
+    """
+    if pair_count <= 0 or not trajectories:
+        return list(trajectories), []
+    shuffled = list(trajectories)
+    rng.shuffle(shuffled)
+    needed = 2 * pair_count
+    holdout, reserved_fragments = [], 0
+    for index, trajectory in enumerate(shuffled):
+        if reserved_fragments >= needed:
+            break
+        available = len(trajectory.get_states()) // fragment_length
+        if available <= 0:
+            continue
+        # Never take the last usable trajectory; the query pool must survive.
+        if len(shuffled) - index <= 1:
+            break
+        holdout.append(trajectory)
+        reserved_fragments += available
+    held = {id(trajectory) for trajectory in holdout}
+    remaining = [trajectory for trajectory in shuffled if id(trajectory) not in held]
+    if not remaining:
+        return list(trajectories), []
+    return remaining, holdout
+
+
+def build_holdout_preferences(
+    holdout_trajectories: list[Trajectory],
+    pair_count: int,
+    fragment_length: int,
+    rng: random.Random,
+) -> list[Preference]:
+    """Uniformly sampled pairs from the reserved trajectories, rated by the TRUE
+    reward. These are the experimenter's oracle yardstick: they measure how often
+    the reward model's ranking agrees with the ground-truth ranking on data no
+    member was fit on. They are deliberately uniform, never actively selected, so
+    the diagnostic does not move when the query strategy changes."""
+    fragments = fragment_trajectories(holdout_trajectories, fragment_length)
+    if len(fragments) < 2:
+        return []
+    return rate_pairs_from_true_reward(random_query_pairs(fragments, pair_count, rng=rng))
+
+
 def rated_pairs_to_tensors(rated_pairs: list[Preference], convert_traj: Callable[[Trajectory], list[list[float]]]):
     t1s, t2s, ratings = [], [], []
     for pair in rated_pairs:
@@ -1178,6 +1233,7 @@ def train_preference_reward_ensemble(
     output_l1: float = 0.001,
     training_mode: str = "kfold",
     train_accuracy_stop: float | None = None,
+    bootstrap: bool = False,
 ) -> list[dict]:
     if not rated_pairs:
         return []
@@ -1185,12 +1241,24 @@ def train_preference_reward_ensemble(
         raise ValueError("reward_models must not be empty")
     if training_mode not in ("kfold", "full"):
         raise ValueError("training_mode must be 'kfold' or 'full'")
+    if bootstrap and training_mode != "full":
+        raise ValueError("bootstrap resampling applies to training_mode='full'")
 
     folds = split_preference_k_folds(rated_pairs, len(reward_models)) if training_mode == "kfold" else None
     member_stats = []
     for fold_index, reward_model in enumerate(reward_models):
         if training_mode == "full":
-            train_pairs, val_pairs = list(rated_pairs), []
+            # B-Pref gives every member the identical buffer in a different order.
+            # Once a member fits that buffer perfectly the ensemble collapses to one
+            # function, and disagreement-based query selection has nothing to measure
+            # (observed here: max-min member training accuracy is exactly 0.000 on
+            # Pusher and Walker2d). A bootstrap resample keeps the members distinct
+            # at the cost of ~37% of the pairs being unseen by any given member.
+            if bootstrap:
+                train_pairs = [rated_pairs[random.randrange(len(rated_pairs))] for _ in range(len(rated_pairs))]
+                val_pairs = []
+            else:
+                train_pairs, val_pairs = list(rated_pairs), []
         else:
             assert folds is not None
             val_pairs = folds[fold_index]
@@ -1237,6 +1305,8 @@ def train_preference_reward_ensemble(
                 {
                     "member_index": fold_index,
                     "training_mode": training_mode,
+                    "bootstrap": bootstrap,
+                    "n_unique_train_pairs": len({id(pair) for pair in train_pairs}),
                     **stats,
                 }
             )

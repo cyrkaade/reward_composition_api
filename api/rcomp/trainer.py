@@ -31,6 +31,7 @@ from .evaluation import (
 from .partials import include_partial_feature, resolve_custom_partial
 from .rewards.model import RewardModel
 from .rewards.preferences import (
+    build_holdout_preferences,
     choose_query_pairs,
     fragment_trajectories,
     gate_partial_error_stats,
@@ -41,6 +42,7 @@ from .rewards.preferences import (
     pretrain_reward_model_bt,
     rate_pairs_from_true_reward,
     reward_model_io_stats,
+    split_holdout_trajectories,
     train_preference_reward_ensemble,
     train_preference_reward_model,
 )
@@ -101,6 +103,12 @@ def query_selection_seed(seed: int, round_index: int) -> int:
     return seed * 1_000_003 + round_index * 10_007 + 20_000_003
 
 
+def holdout_selection_seed(seed: int, round_index: int) -> int:
+    """Independent deterministic seed stream for the held-out diagnostic split, so
+    reserving a diagnostic set cannot shift which pairs the query selector sees."""
+    return seed * 7_919 + round_index * 104_729 + 700_000_001
+
+
 def learn_policy(
     model,
     total_timesteps: int,
@@ -146,6 +154,7 @@ class RlhfTrainer:
         self.collection_label = collection_label
         self.rated_train = []
         self.rated_val = []
+        self.holdout_rated = []
         self.total_queries = 0
         self.pretraining_done = False
         self.partial_stat_count = 0
@@ -196,9 +205,15 @@ class RlhfTrainer:
             return
 
         pretrain_trajectories, query_trajectories = self.collect_round_data(round_index)
+        query_trajectories, holdout_trajectories = self.reserve_holdout(query_trajectories, round_index)
         self.maybe_pretrain_reward_model(pretrain_trajectories)
         self.add_query_pairs(query_trajectories, round_query_budget, round_index)
+        # Scored on both sides of training so one round yields the head start the
+        # prior provides (before) and what the preferences added on top (after).
+        self.build_round_holdout(holdout_trajectories, round_index)
+        before = self.score_holdout()
         self.maybe_train_reward_model()
+        self.record_holdout(round_index, before, self.score_holdout())
         self.train_policy_round(round_index)
         if self.total_queries >= config.query_budget:
             print("synthetic query budget exhausted")
@@ -334,6 +349,71 @@ class RlhfTrainer:
                     )
             self.pretraining_done = True
 
+    def reserve_holdout(self, trajectories: list[Trajectory], round_index: int) -> tuple[list[Trajectory], list[Trajectory]]:
+        """Take whole trajectories out of the query pool for the diagnostic set.
+
+        These trajectories are never fragmented into queries, so no ensemble member
+        can be fit on them. That is the difference from `ensemble_training=kfold`,
+        whose per-member "validation" fold is still inside the buffer every OTHER
+        member trains on, and from `full`, which holds nothing out at all.
+        """
+        if not self.config.holdout_pairs:
+            return trajectories, []
+        rng = random.Random(holdout_selection_seed(self.config.seed, round_index))
+        query_trajectories, holdout_trajectories = split_holdout_trajectories(
+            trajectories,
+            self.config.holdout_pairs,
+            self.config.fragment_length,
+            rng,
+        )
+        if not holdout_trajectories:
+            print("holdout diagnostic: not enough trajectories to reserve a disjoint set this round")
+        return query_trajectories, holdout_trajectories
+
+    def build_round_holdout(self, holdout_trajectories: list[Trajectory], round_index: int) -> None:
+        if not self.config.holdout_pairs:
+            return
+        rng = random.Random(holdout_selection_seed(self.config.seed, round_index) + 1)
+        self.holdout_rated = build_holdout_preferences(
+            holdout_trajectories,
+            self.config.holdout_pairs,
+            self.config.fragment_length,
+            rng,
+        )
+        print(f"holdout diagnostic: {len(self.holdout_rated)} true-reward-rated pairs, never trained on")
+
+    def score_holdout(self) -> dict | None:
+        if not self.holdout_rated:
+            return None
+        return reward_model_diagnostics(
+            self.reward_models,
+            self.holdout_rated,
+            self.convert_traj,
+            partial_mean=self.runtime.partial_mean,
+            partial_std=self.runtime.partial_std,
+            partial_alpha=self.config.partial_alpha,
+        )
+
+    def record_holdout(self, round_index: int, before: dict | None, after: dict | None) -> None:
+        if before is None and after is None:
+            return
+        entry = {
+            "round": round_index,
+            "cumulative_queries": self.total_queries,
+            "n_holdout_pairs": len(self.holdout_rated),
+            "before": before,
+            "after": after,
+        }
+        self.runtime.holdout_diagnostics.append(entry)
+        if after:
+            gain = (after["accuracy"] - before["accuracy"]) if before else float("nan")
+            print(
+                f"holdout diagnostic (round {round_index}, {self.total_queries} queries): "
+                f"agreement with the true ranking {after['accuracy']:.3f} "
+                f"(before this round's training {before['accuracy']:.3f}, change {gain:+.3f}); "
+                f"bt_loss {after['bt_loss']:.4f}; composed {after['accuracy_composed']:.3f}"
+            )
+
     def add_query_pairs(self, trajectories: list[Trajectory], round_query_budget: int, round_index: int) -> None:
         config = self.config
         query_model = self.reward_models if (self.total_queries > 0 or self.pretraining_done) else None
@@ -434,6 +514,7 @@ class RlhfTrainer:
                     gate_patience=config.gate_patience,
                     gate_prior_penalty=config.gate_prior_penalty,
                     train_accuracy_stop=config.reward_model_train_accuracy_stop,
+                    bootstrap=config.ensemble_bootstrap,
                 )
                 self.runtime.reward_model = None
                 self.runtime.reward_models = self.reward_models
@@ -970,6 +1051,9 @@ class ExperimentRunner:
             "gate_error_stats": runtime.gate_error_stats,
             "rm_diagnostics": runtime.rm_diagnostics,
             "rm_diagnostics_before_training": runtime.rm_diagnostics_before,
+            "holdout_diagnostics": runtime.holdout_diagnostics,
+            "holdout_pairs": self.config.holdout_pairs,
+            "ensemble_bootstrap": self.config.ensemble_bootstrap,
             "reward_model_training": runtime.reward_model_training,
             "query_fisher": runtime.query_fisher,
             "pretrain_stats": runtime.pretrain_stats,

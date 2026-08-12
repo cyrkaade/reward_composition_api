@@ -40,9 +40,9 @@ def test_preset_key_is_version_agnostic(env_id, expected):
 
 
 def test_lookup_returns_a_copy_so_callers_cannot_mutate_the_table():
-    first = lookup_preset("Hopper-v5")
+    first = lookup_preset("Walker2d-v5")
     first["ppo"]["learning_rate"] = 999.0
-    assert lookup_preset("Hopper-v5")["ppo"]["learning_rate"] == pytest.approx(3e-5)
+    assert lookup_preset("Walker2d-v5")["ppo"]["learning_rate"] == pytest.approx(5.05041e-05)
 
 
 def test_unknown_env_has_no_preset():
@@ -51,24 +51,40 @@ def test_unknown_env_has_no_preset():
         tuned_ppo_hyperparams("NotAnEnv-v1")
 
 
-def test_hopper_preset_is_the_validated_gsde_derived_block():
-    """The rl-zoo Hopper block pins Hopper-v5 at the survive-only optimum (~1000).
+def test_hopper_preset_is_sb3_defaults_because_both_tuned_blocks_lost():
+    """Hopper has no working tuned block, so the flag must be a no-op there.
 
-    Measured replacement: 3 seeds x 1M, median peak 2995 / final 2127. The three
-    settings below are the ones that were shown to matter, so guard them.
+    Two candidates were measured and both lost. The rl-zoo Hopper-v4 block pins
+    Hopper-v5 at the survive-only optimum (~1000, episode length 1000). The
+    gSDE-derived replacement won a 3-seed x 1M pilot but lost the 10-seed x 5M
+    head-to-head against stock at matched n_envs: peak 2390 vs 3369, stock ahead
+    in 9 of 10 seeds (exact p=0.004). Guard against silently reintroducing either.
     """
     hyperparams = tuned_ppo_hyperparams("Hopper-v5")
 
-    assert hyperparams["learning_rate"] == pytest.approx(3e-5)
+    assert lookup_preset("Hopper-v5")["tuned"] is False
+    assert hyperparams["n_steps"] == 2048
+    assert hyperparams["learning_rate"] == pytest.approx(3e-4)
     assert hyperparams["gamma"] == pytest.approx(0.99)
-    assert hyperparams["n_epochs"] == 20
-    assert hyperparams["clip_range"] == pytest.approx(0.4)
-    assert hyperparams["clip_range_vf"] == pytest.approx(0.5)
-    assert hyperparams["gae_lambda"] == pytest.approx(0.9)
-    assert hyperparams["policy_kwargs"]["net_arch"] == [256, 256]
-    # log_std_init must stay unset so SB3's default 0 (action std 1.0) applies.
-    # Forcing -2 collapsed this config from 2835 to 452 by 160k steps.
-    assert "log_std_init" not in hyperparams["policy_kwargs"]
+    assert "clip_range_vf" not in hyperparams
+    assert "policy_kwargs" not in hyperparams
+
+
+def test_tuned_flag_is_inert_where_no_tuned_block_exists():
+    """Pusher and Hopper both fall through to SB3 defaults, so runs with and
+    without --tuned-hyperparams stay comparable on those two environments."""
+    for env_id in ("Hopper-v5", "Pusher-v5"):
+        stock = get_suite("mujoco").ppo_hyperparams(
+            normalize_experiment_config(ExperimentConfig(suite="mujoco", env_id=env_id, mode="true")),
+            _ProbeEnv(),
+        )
+        tuned = get_suite("mujoco").ppo_hyperparams(
+            normalize_experiment_config(
+                ExperimentConfig(suite="mujoco", env_id=env_id, mode="true", tuned_hyperparams=True)
+            ),
+            _ProbeEnv(),
+        )
+        assert stock == tuned, env_id
 
 
 def test_reacher_preset_agrees_with_the_pre_existing_suite_preset():
@@ -121,19 +137,19 @@ def test_tuned_hyperparams_is_off_by_default():
 
 def test_tuned_hyperparams_flag_applies_the_preset():
     config = normalize_experiment_config(
-        ExperimentConfig(suite="mujoco", env_id="Hopper-v5", mode="true", tuned_hyperparams=True)
+        ExperimentConfig(suite="mujoco", env_id="Walker2d-v5", mode="true", tuned_hyperparams=True)
     )
     hyperparams = get_suite("mujoco").ppo_hyperparams(config, _ProbeEnv())
 
     assert hyperparams["n_steps"] == 512
-    assert hyperparams["learning_rate"] == pytest.approx(3e-5)
+    assert hyperparams["learning_rate"] == pytest.approx(5.05041e-05)
 
 
 def test_policy_learning_kwargs_still_win_over_the_preset():
     config = normalize_experiment_config(
         ExperimentConfig(
             suite="mujoco",
-            env_id="Hopper-v5",
+            env_id="Walker2d-v5",
             mode="true",
             tuned_hyperparams=True,
             policy_learning_kwargs={"n_steps": 256},
@@ -142,7 +158,7 @@ def test_policy_learning_kwargs_still_win_over_the_preset():
     hyperparams = get_suite("mujoco").ppo_hyperparams(config, _ProbeEnv())
 
     assert hyperparams["n_steps"] == 256
-    assert hyperparams["learning_rate"] == pytest.approx(3e-5)
+    assert hyperparams["learning_rate"] == pytest.approx(5.05041e-05)
 
 
 def test_every_preset_records_its_provenance():
