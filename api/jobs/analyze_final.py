@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""Read the final grid (jobs/run_final.sh). Four stages, one verdict each.
+"""Read the final grid (jobs/run_final.sh). Five stages, one verdict each.
 
     python jobs/analyze_final.py            # everything present
-    python jobs/analyze_final.py --only 0   # the qualification gate, first
+    python jobs/analyze_final.py --only 0   # the gates, first
 
 Uses scipy's EXACT Wilcoxon and an exact McNemar. jobs/analyze_pre4.py used a
 normal approximation without continuity or tie correction and its output was
@@ -161,46 +161,107 @@ def describe(label, runs):
 
 
 # --------------------------------------------------------------------- stages
+def qualify(rows, cell, true_variant, partial_variant, label):
+    """The three tests Walker2d failed and was never given before 480 runs."""
+    true_runs = index(rows, true_variant, cell)
+    if not true_runs:
+        print(f"\n   {label}: (no runs yet)")
+        return
+    finals = sorted(r["final"] for r in true_runs.values())
+    spread = finals[-1] - finals[0]
+    gains = [float(r["curve"][-1] - r["curve"][-1 - max(len(r["curve"]) // 4, 1)]) for r in true_runs.values()]
+    print(f"\n   {label}   n={len(finals)}")
+    print(f"      (a) true arm     min={finals[0]:9.1f}  median={st.median(finals):9.1f}  max={finals[-1]:9.1f}"
+          f"   spread/median={spread / max(abs(st.median(finals)), 1e-9):5.2f}")
+    print(f"      (b) last-quarter gain median={st.median(gains):+9.1f}")
+    partial_runs = index(rows, partial_variant, cell)
+    if not partial_runs:
+        return
+    seeds = sorted(set(true_runs) & set(partial_runs))
+    if not seeds:
+        return
+    start = st.median(r["start"] for r in true_runs.values())
+    true_med = st.median(true_runs[s]["final"] for s in seeds)
+    partial_med = st.median(partial_runs[s]["final"] for s in seeds)
+    span = true_med - start
+    recovery = 100 * (partial_med - start) / span if abs(span) > 1e-9 else float("nan")
+    gap = compare(rows, true_variant, partial_variant, cell, label="true - prior")
+    print(f"      (c) untrained={start:9.1f}  true={true_med:9.1f}  prior alone={partial_med:9.1f}"
+          f"   prior recovers {recovery:7.1f}% of the range")
+    show(gap, "          ")
+    if recovery > 70:
+        print("          -> PRIOR TOO COMPLETE. Same failure as lunar_lander_approach (89%)")
+        print("             and Walker2d (116%): nothing left for the learned reward to add,")
+        print("             so naive-minus-prior cannot be significant here.")
+    elif gap and gap["median"] > 0:
+        print("          -> incomplete prior AND true > prior. This is Pusher's shape (-99%),")
+        print("             the only PRE4 environment where the composition beat both parts.")
+
+
 def stage0(rows):
     print("\n" + "=" * 112)
-    print("STAGE 0  DO THE NEW ENVIRONMENTS QUALIFY?  (do not submit stage 1 for one that fails)")
+    print("STAGE 0  THE GATES")
     print("=" * 112)
-    print("   Three tests, all three of which Walker2d failed and none of which it was given")
-    print("   before 480 runs were spent on it:")
-    print("     (a) UNIMODAL ceiling -- a true arm that collapses in a third of seeds cannot")
-    print("         anchor 'how close to the ceiling'. Walker2d: 799-6263, 3/10 under 2500.")
-    print("     (b) CONVERGED -- last-quarter gain near zero. Walker2d was still +492 at 2M.")
-    print("     (c) INCOMPLETE PRIOR -- the prior alone must NOT already solve the task, or")
-    print("         there is no headroom for a learned reward and the composition cannot win.")
+
+    print("\n   0a. HYPERPARAMETERS for the two new environments. Everything else in this")
+    print("       grid runs STOCK SB3 with no --tuned-hyperparams, which the archive shows")
+    print("       is free on LunarLander (281.8 vs 282.7) and inert on Pusher (no zoo block")
+    print("       exists). These two have never been measured either way.")
+    for cell, arms in (("cheetah", ("true_stock", "true_zoo")),
+                       ("swimmer", ("true_stock", "true_g9999"))):
+        print(f"\n      {ENV_NAME.get(cell, cell)}")
+        for arm in arms:
+            runs = index(rows, arm, cell)
+            if not runs:
+                print(f"         {arm:<12} (none)")
+                continue
+            finals = sorted(r["final"] for r in runs.values())
+            print(f"         {arm:<12} n={len(finals)}  median={st.median(finals):9.1f}  "
+                  f"min={finals[0]:9.1f}  max={finals[-1]:9.1f}  "
+                  f"peak={st.median(r['peak'] for r in runs.values()):9.1f}")
+        show(compare(rows, arms[1], arms[0], cell, label=f"{arms[1]} - {arms[0]}"), "         ")
+    print("\n      DECIDE: keep stock unless the alternative clearly wins AND stays unimodal.")
+    print("      Then set CHEETAH_ARM / SWIMMER_GAMMA at the top of run_final.sh.")
+
+    print("\n   0b. DO THE NEW ENVIRONMENTS QUALIFY?")
+    print("       (a) UNIMODAL ceiling -- a true arm that collapses in a third of seeds cannot")
+    print("           anchor 'how close to the ceiling'. Walker2d: 799-6263, 3/10 under 2500.")
+    print("       (b) CONVERGED -- last-quarter gain near zero. Walker2d was still +492 at 2M.")
+    print("       (c) INCOMPLETE PRIOR -- the prior alone must NOT already solve the task.")
     for cell in ("cheetah", "swimmer"):
-        true_runs = index(rows, "true_std", cell)
-        partial_runs = index(rows, "partial_std", cell)
-        if not true_runs:
-            print(f"\n   {ENV_NAME.get(cell, cell)}: (no runs yet)")
-            continue
-        finals = sorted(r["final"] for r in true_runs.values())
-        spread = finals[-1] - finals[0]
-        gains = [float(r["curve"][-1] - r["curve"][-1 - max(len(r["curve"]) // 4, 1)]) for r in true_runs.values()]
-        print(f"\n   {ENV_NAME.get(cell, cell)}   n={len(finals)}")
-        print(f"      (a) true arm     min={finals[0]:9.1f}  median={st.median(finals):9.1f}  max={finals[-1]:9.1f}"
-              f"   spread/median={spread / max(abs(st.median(finals)), 1e-9):5.2f}")
-        print(f"      (b) last-quarter gain median={st.median(gains):+9.1f}")
-        if partial_runs:
-            seeds = sorted(set(true_runs) & set(partial_runs))
-            start = st.median(r["start"] for r in true_runs.values())
-            true_med = st.median(true_runs[s]["final"] for s in seeds)
-            partial_med = st.median(partial_runs[s]["final"] for s in seeds)
-            span = true_med - start
-            recovery = 100 * (partial_med - start) / span if abs(span) > 1e-9 else float("nan")
-            gap = compare(rows, "true_std", "partial_std", cell, label="true - partial")
-            print(f"      (c) untrained={start:9.1f}  true={true_med:9.1f}  prior alone={partial_med:9.1f}"
-                  f"   prior recovers {recovery:7.1f}% of the range")
-            show(gap, "          ")
-            if recovery > 70:
-                print("          -> PRIOR TOO COMPLETE. Same failure as LunarLander (89%) and")
-                print("             Walker2d (116%): nothing left for the learned reward to add.")
-            elif gap and gap["median"] > 0:
-                print("          -> incomplete prior AND true > prior. This is Pusher's shape (-99%).")
+        # fall back to the stage-0a stock arm before the stage-1 true arm exists
+        true_variant = "true_std" if index(rows, "true_std", cell) else "true_stock"
+        qualify(rows, cell, true_variant, "partial_std", ENV_NAME.get(cell, cell))
+
+    print("\n   0c. HOW MUCH ROOM DOES EACH WEAKENED LunarLander PRIOR LEAVE?")
+    print("       lunar_lander_approach recovers 89% of the range alone, which is why")
+    print("       naive-minus-prior was null on LunarLander at every PRE4 budget. These")
+    print("       levels DELETE components rather than rescale, because rescaling every")
+    print("       weight by c is exactly --partial-alpha c and is already stage 2:")
+    print("         p10  distance only          p25  + speed")
+    print("         approach  + orientation and leg contact (the PRE4 prior)")
+    print("       Only run a stage-4 naive arm for a level that leaves real headroom.")
+    true_runs = index(rows, "true_std", "ll")
+    if true_runs:
+        start = st.median(r["start"] for r in true_runs.values())
+        true_med = st.median(r["final"] for r in true_runs.values())
+        span = true_med - start
+        print(f"\n      LunarLander untrained={start:.1f}  true={true_med:.1f}  (range {span:.1f})")
+        print(f"      {'prior':<26} {'final':>9} {'recovers':>10}   true - prior")
+        for variant, name in (("partial_p10", "p10 (distance only)"),
+                              ("partial_p25", "p25 (+ speed)"),
+                              ("partial_std", "approach (PRE4 prior)")):
+            runs = index(rows, variant, "ll")
+            if not runs:
+                print(f"      {name:<26}    (none)")
+                continue
+            med = st.median(r["final"] for r in runs.values())
+            recovery = 100 * (med - start) / span if abs(span) > 1e-9 else float("nan")
+            gap = compare(rows, "true_std", variant, "ll", label="")
+            summary = f"{gap['median']:+8.1f}  {gap['wins']}/{gap['n']}  p={gap['p']:.4f}" if gap else ""
+            print(f"      {name:<26} {med:>9.1f} {recovery:>9.1f}%   {summary}")
+        print("\n      READ: a level recovering well under ~70% has headroom a learned reward")
+        print("      can fill. One recovering 89% like the PRE4 prior does not.")
 
 
 def stage1(rows):
@@ -325,6 +386,41 @@ def stage3(rows):
     print("   0.000 on two envs), so the question is genuinely reopened, not replicated.")
 
 
+def stage4(rows):
+    print("\n" + "=" * 112)
+    print("STAGE 4  PRIOR INFORMATION: does the composition's gain grow as the prior knows less?")
+    print("=" * 112)
+    print("   This is the dose-response PRE4 lacked. It is WITHIN one environment, so unlike")
+    print("   the cross-environment comparison it is not confounded by horizon, reward scale,")
+    print("   dynamics or convergence. Each level DELETES components rather than rescaling -")
+    print("   rescaling every weight by c is exactly --partial-alpha c and is stage 2.")
+    print("   PREDICTION: naive - prior is largest for p10 and shrinks to nothing at the")
+    print("   PRE4 prior, which recovers 89% of the task on its own.")
+    print(f"\n   {'prior':<26} {'prior alone':>12} {'naive':>10} {'holdoutAcc':>11}   naive - prior")
+    for naive_variant, partial_variant, name in (
+        ("naive_p10", "partial_p10", "p10 (distance only)"),
+        ("naive_p25", "partial_p25", "p25 (+ speed)"),
+        ("naive_std", "partial_std", "approach (PRE4 prior)"),
+    ):
+        naive_runs = index(rows, naive_variant, "ll", 350)
+        partial_runs = index(rows, partial_variant, "ll")
+        if not naive_runs or not partial_runs:
+            print(f"   {name:<26}   (incomplete)")
+            continue
+        accs = [r["holdout_accuracy"] for r in naive_runs.values() if r["holdout_accuracy"] is not None]
+        gap = compare(rows, naive_variant, partial_variant, "ll", 350, b_budget=0, label="")
+        summary = f"{gap['median']:+8.1f}  {gap['wins']}/{gap['n']}  p={gap['p']:.4f}" if gap else ""
+        print(f"   {name:<26} {st.median(r['final'] for r in partial_runs.values()):>12.1f} "
+              f"{st.median(r['final'] for r in naive_runs.values()):>10.1f} "
+              f"{st.median(accs) if accs else float('nan'):>11.3f}   {summary}")
+    print("\n   Also report naive - feedback at each level: if the prior is weak enough that")
+    print("   the composition stops beating vanilla RLHF too, the level is past the useful")
+    print("   range and only says 'a bad prior does not help'.")
+    for naive_variant, name in (("naive_p10", "p10"), ("naive_p25", "p25"), ("naive_std", "approach")):
+        show(compare(rows, naive_variant, "feedback_std", "ll", 350,
+                     label=f"naive({name}) - feedback"), "   ")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -340,7 +436,7 @@ def main() -> int:
         print("WARNING: scipy is not installed; every p-value below will be nan.\n")
 
     print("=" * 112)
-    print(f"COVERAGE  {len(rows)}/310 runs")
+    print(f"COVERAGE  {len(rows)}/360 runs")
     print("=" * 112)
     grouped = defaultdict(list)
     for row in rows:
@@ -367,7 +463,7 @@ def main() -> int:
     holdouts = [r["n_holdout"] for r in rows if r["n_holdout"]]
     print(f"\n   holdout pairs per round: {sorted(set(holdouts)) or 'NONE -- the run predates --holdout-pairs'}")
 
-    stages = {"0": stage0, "1": stage1, "2": stage2, "3": stage3}
+    stages = {"0": stage0, "1": stage1, "2": stage2, "3": stage3, "4": stage4}
     for name, fn in stages.items():
         if args.only is None or name in args.only:
             fn(rows)

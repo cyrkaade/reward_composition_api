@@ -59,7 +59,21 @@ class LunarLanderLevelPartial:
         }
 
 
+# A DESCENDING ladder, which is what the composition experiment needs.
+#
+# The trap to avoid: scaling every weight by c is EXACTLY equivalent to setting
+# --partial-alpha c, because the partial is linear in its weights and naive mode
+# computes alpha * partial. Scaling therefore tests reward SCALE, not how much of
+# the task the prior knows, and it is already covered by the alpha sweep. To make
+# a prior genuinely weaker you have to delete information, so these levels remove
+# whole components instead.
+#
+# lunar_lander_approach (the PRE4 prior, weights 1.0/0.8/0.5/0.5, no terminal)
+# recovers 89% of the true arm's range on its own, which is why naive minus
+# partial-only was null on LunarLander at every budget. p25 drops orientation and
+# leg contact; p10 drops speed as well and knows only where the pad is.
 _LEVELS = {
+    "lunarlander_p10": dict(w_dist=1.0, w_speed=0.0, w_tilt=0.0, w_leg=0.0, term_bonus=0.0),
     "lunarlander_p25": dict(w_dist=1.0, w_speed=0.8, w_tilt=0.0, w_leg=0.0, term_bonus=0.0),
     "lunarlander_p50": dict(w_dist=1.0, w_speed=0.8, w_tilt=0.5, w_leg=0.5, term_bonus=30.0),
     "lunarlander_p75": dict(w_dist=1.0, w_speed=0.8, w_tilt=0.5, w_leg=0.5, term_bonus=200.0),
