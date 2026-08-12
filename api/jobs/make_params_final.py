@@ -106,10 +106,24 @@ add(("ll", "pusher"), ("true_std", "partial_std"), (0,))
 add(("ll", "pusher"), ("feedback_std", "naive_std"), LADDER)
 
 # --- stage 2: reward SCALE ---------------------------------------------------
-# alpha < 1 has never been run: all 3,574 historical runs used alpha in {1,2,3}.
 # Measured prior:model per-step scale in PRE4 - Walker 5.19, LunarLander 1.24,
 # Pusher 0.53, Reacher 0.29 - ordered the four environments exactly by whether
-# the composition beat the prior alone. alpha 1.0 is naive_std at ll/q350. 30
+# the composition beat the prior alone. alpha 1.0 is naive_std at ll/q350.
+#
+# ALPHA < 1 HAS BEEN RUN BEFORE and it LOWERED final return. The `ga` family has
+# 180 runs at alpha in {0.1, 0.25, 0.5} with the gate OFF, 15 seeds each, paired
+# against alpha 1.0 (curve-final, exact two-sided Wilcoxon):
+#     LunarLander  0.1 -79.3 (3/15, p=0.008)   0.25 -114.6 (2/15, p=0.008)   0.5 -54.8 (p=0.121)
+#     Pusher       0.1  -3.0 (3/15, p=0.015)   0.25   -1.3 (p=0.389)         0.5  -2.0 (p=0.095)
+#     Reacher      0.1  -0.7 (p=0.330)         0.25   -2.3 (p=0.095)         0.5  -9.0 (4/15, p=0.010)
+#
+# Those runs used the LEGACY reward model - hidden [200], ensemble 1, NO tanh,
+# q700 only - so they are not a test of the scale hypothesis, which is a claim
+# about a tanh-BOUNDED model whose per-step size is pinned near 0.5 regardless of
+# environment. Without tanh the model's scale is free to grow and the ratio alpha
+# is supposed to control does not exist. This stage re-runs alpha under the
+# standardized model. Given the prior evidence, treat a positive result as the
+# surprising outcome, not the expected one. 30
 add(("ll",), ("alpha010", "alpha025", "alpha050"), (350,))
 
 # --- stage 3: cold start, 2x2 ------------------------------------------------
