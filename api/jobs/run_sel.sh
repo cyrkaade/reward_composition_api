@@ -201,7 +201,7 @@ RM=(
   --reward-hidden-sizes 256,256,256
   --reward-model-ensemble-size 3
   --reward-model-lr 0.0003
-  --reward-model-batch-size 128
+  --reward-model-batch-size 32
   --reward-model-loss-reduction mean
   --reward-model-l1 0
   --reward-output-l1 0.001
