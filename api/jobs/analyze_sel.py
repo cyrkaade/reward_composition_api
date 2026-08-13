@@ -23,6 +23,17 @@ with `start` the first evaluation point of the cell's true arm, i.e. what an
 essentially untrained policy scores. 1.0 means the prior is the true reward,
 0.0 means it bought nothing. The target band is 0.2 to 0.8.
 
+A second, post-training readout is printed next to it: PCC, the Pearson
+correlation between the policy's partial return and its true return across the
+run's evaluation checkpoints (eval/component_evaluations.csv, columns
+mean_partial and mean_total). It is computed AFTER training from states the
+trained policy actually visits, so unlike the random-policy ranking agreement
+in the archive it reflects the on-distribution alignment of the prior: near
++1.0 means optimizing the prior moved the true reward with it the whole way,
+near 0 or negative means the two objectives decoupled. It is a per-seed number;
+the table shows the median over seeds. Only prior arms have it (the true and
+vanilla arms carry no partial, their column is nan).
+
 FIVE SEEDS CANNOT TEST ANYTHING. The exact two-sided Wilcoxon floor at n=5 is
 0.0625, so no contrast here can reach p<0.05 however large it is. This script
 therefore prints medians, per-seed spreads and win counts, and no p-values. It is
@@ -80,6 +91,22 @@ def load_runs(root: Path) -> list[dict]:
         point_means = results.mean(axis=1)
         peak_index = int(np.argmax(point_means))
 
+        # Post-training PCC partiality: corr(partial return, true return) over
+        # the periodic component evaluations. nan when the arm logs no partial
+        # (true/vanilla) or either series is constant.
+        pcc = float("nan")
+        comp_path = run_dir / "eval" / "component_evaluations.csv"
+        if comp_path.exists():
+            with comp_path.open(newline="", encoding="utf-8") as handle:
+                comp_rows = [
+                    row for row in csv.DictReader(handle)
+                    if row.get("mean_total") not in (None, "") and row.get("mean_partial") not in (None, "")
+                ]
+            true_series = np.asarray([float(row["mean_total"]) for row in comp_rows], dtype=np.float64)
+            partial_series = np.asarray([float(row["mean_partial"]) for row in comp_rows], dtype=np.float64)
+            if len(true_series) >= 3 and true_series.std() > 0 and partial_series.std() > 0:
+                pcc = float(np.corrcoef(partial_series, true_series)[0, 1])
+
         runs.append(
             {
                 "cell": cell,
@@ -100,6 +127,7 @@ def load_runs(root: Path) -> list[dict]:
                 "curve_final_median": float(np.median(results[-1])),
                 "max_reward": float(point_means[peak_index]),
                 "max_reward_timestep": int(timesteps[peak_index]),
+                "pcc_partial_true": pcc,
                 "query_budget": int(meta.get("query_budget") or 0),
                 "synthetic_queries": int(meta.get("synthetic_queries") or 0),
                 "timesteps": timesteps,
@@ -128,7 +156,7 @@ def write_csv(runs: list[dict], path: Path) -> None:
         "cell", "env_id", "variant", "mode", "partial_reference", "seed",
         "total_timesteps", "final_reward", "final_std",
         "curve_final_mean", "curve_final_std", "curve_final_median",
-        "max_reward", "max_reward_timestep", "curve_start",
+        "max_reward", "max_reward_timestep", "curve_start", "pcc_partial_true",
         "query_budget", "synthetic_queries", "run_dir",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -203,7 +231,7 @@ def report_priors(grouped, anchors, cells) -> None:
               f"vanilla {vanilla_final:.1f} (partiality {vanilla_part:.2f})")
         print(
             f"    {'prior':18s} {'n':>2s} {'final':>10s} {'seed min':>10s} {'seed max':>10s} "
-            f"{'peak':>10s} {'peak @':>9s} {'partiality':>11s} {'>vanilla':>9s}  verdict"
+            f"{'peak':>10s} {'peak @':>9s} {'partiality':>11s} {'PCC':>6s} {'>vanilla':>9s}  verdict"
         )
         for variant in priors:
             runs = grouped[(cell, variant)]
@@ -223,11 +251,13 @@ def report_priors(grouped, anchors, cells) -> None:
                 verdict = "too strong (~true reward)"
             else:
                 verdict = "too weak"
+            pccs = [r["pcc_partial_true"] for r in runs if np.isfinite(r["pcc_partial_true"])]
+            pcc_text = f"{med(pccs):6.2f}" if pccs else "   nan"
             print(
                 f"    {variant:18s} {len(runs):2d} {final:10.1f} {min(finals):10.1f} "
                 f"{max(finals):10.1f} {med([r['max_reward'] for r in runs]):10.1f} "
                 f"{med([r['max_reward_timestep'] for r in runs]):9.0f} {partiality:11.2f} "
-                f"{beat:>4d}/{len(runs):<4d}  {verdict}"
+                f"{pcc_text} {beat:>4d}/{len(runs):<4d}  {verdict}"
             )
 
 

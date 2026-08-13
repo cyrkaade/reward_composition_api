@@ -76,6 +76,13 @@ class ExperimentConfig:
     policy_log_interval: int | None = _f(None, "stable-baselines3 log interval")
     policy_learning_kwargs: dict[str, Any] | None = _f(None, "PPO hyperparameter overrides, e.g. '{n_steps:256,batch_size:64}'")
     collection_timesteps: int | None = _f(None, "Trajectory-collection timesteps per round (suite default when omitted)")
+    round0_collection_timesteps: int | None = _f(
+        None,
+        "Trajectory-collection timesteps for round 0 only (collection_timesteps when omitted). Round 0's "
+        "untrained policy is the most diverse sampler the run will ever have, so it can justify a larger "
+        "sample than later rounds; with --round0-data-protocol separate/overlap EACH of the two round-0 "
+        "streams collects this many steps, exactly as collection_timesteps did before",
+    )
     fragment_length: int | None = _f(None, "Preference fragment length (suite default when omitted)")
     active_learning: bool | None = _f(None, "Use active query selection (suite default when omitted)")
     active_query_strategy: str = _f("auto", "Active learning strategy", choices=ACTIVE_QUERY_STRATEGIES)
@@ -135,6 +142,7 @@ class ExperimentConfig:
     partial_prediction_coef: float = _f(0.0, "Weight of the auxiliary MSE loss for predicting the (normalized) partial reward; 0 disables the extra head")
     batchnorm_model_reward: bool = _f(False, "Mini-batch normalize the model output (delta) inside the loss and at inference (batch stats in training, running stats at eval)")
     tanh_model_reward: bool = _f(False, "Bound the reward model's per-state output to [-1,1] with tanh INSIDE the model, as PEBBLE/B-Pref do (model_reward_min/max only clip afterwards in the wrapper and do not shape the Bradley-Terry loss)")
+    tanh_scale: float = _f(1.0, "Divide the pre-activation value by this before tanh, i.e. tanh(x/scale): the hard [-1,1] bound is unchanged but the near-linear region widens and saturation gradients vanish more slowly. 1.0 reproduces tanh(x) exactly; values != 1 require --tanh-model-reward")
     gate_partial: bool = _f(False, "Learn a per-state gate g(s,a) in [0,1] so the composed reward is g*partial + delta (the model decides how much to trust the partial per state)")
     gate_holdout: bool = _f(False, "Train the naive frozen-trunk gate on held-out preferences with early stopping, instead of the pairs the reward model was already fit on")
     gate_lr: float | None = _f(None, "Learning rate for the gate head (reward_model_lr when omitted); lower values avoid saturating the sigmoid")
@@ -438,6 +446,12 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("tanh_model_reward and batchnorm_model_reward are mutually exclusive")
     if config.tanh_model_reward and config.mode not in PREFERENCE_MODES:
         raise ConfigError("tanh_model_reward requires a preference mode (feedback/naive/delta)")
+    if config.tanh_scale <= 0:
+        raise ConfigError("tanh_scale must be greater than zero")
+    if config.tanh_scale != 1.0 and not config.tanh_model_reward:
+        raise ConfigError("tanh_scale rescales the tanh output bound and requires --tanh-model-reward")
+    if config.round0_collection_timesteps is not None and config.round0_collection_timesteps <= 0:
+        raise ConfigError("round0_collection_timesteps must be greater than zero")
     if spec.presets is not None and config.preset not in spec.presets:
         raise ConfigError(f"Unsupported {config.suite} preset '{config.preset}'")
 

@@ -192,11 +192,11 @@ class RlhfTrainer:
         config = self.config
         if round_index == 0 and config.round0_data_protocol != "legacy":
             collection_description = (
-                f"two independently seeded sets of {config.collection_timesteps} {self.collection_label} "
+                f"two independently seeded sets of {self.round_collection_timesteps(round_index)} {self.collection_label} "
                 f"({config.round0_data_protocol} protocol)"
             )
         else:
-            collection_steps = config.collection_timesteps * (2 if round_index == 0 else 1)
+            collection_steps = self.round_collection_timesteps(round_index) * (2 if round_index == 0 else 1)
             collection_description = f"{collection_steps} {self.collection_label}"
         print(f"\nPreference round {round_index}: collecting {collection_description} for {round_query_budget} queries")
         if round_query_budget <= 0 and not self._needs_pretraining():
@@ -221,6 +221,15 @@ class RlhfTrainer:
     def _needs_pretraining(self) -> bool:
         return bool(self.config.pretrain_reward_model and not self.pretraining_done)
 
+    def round_collection_timesteps(self, round_index: int) -> int:
+        """Collection steps for one round: round 0 may carry its own override
+        (``--round0-collection-timesteps``); every other round, and round 0
+        without the flag, uses ``collection_timesteps`` unchanged."""
+        config = self.config
+        if round_index == 0 and config.round0_collection_timesteps is not None:
+            return config.round0_collection_timesteps
+        return config.collection_timesteps
+
     def collect_round_data(self, round_index: int) -> tuple[list[Trajectory], list[Trajectory]]:
         """Collect the pretraining and query pools for one feedback round.
 
@@ -240,8 +249,9 @@ class RlhfTrainer:
         """
         config = self.config
         if round_index == 0 and config.round0_data_protocol != "legacy":
-            set_a = self.collect_trajectories(round_index, config.collection_timesteps, 0)
-            set_b = self.collect_trajectories(round_index, config.collection_timesteps, 1)
+            round_steps = self.round_collection_timesteps(round_index)
+            set_a = self.collect_trajectories(round_index, round_steps, 0)
+            set_b = self.collect_trajectories(round_index, round_steps, 1)
             self.update_partial_stats([*set_a, *set_b])
             # Equal collection steps do not guarantee equal query capacity when
             # episode boundaries discard fragment remainders. Materializing full
@@ -266,7 +276,7 @@ class RlhfTrainer:
             )
             return pretrain_trajectories, query_trajectories
 
-        collection_steps = config.collection_timesteps * (2 if round_index == 0 else 1)
+        collection_steps = self.round_collection_timesteps(round_index) * (2 if round_index == 0 else 1)
         trajectories = self.collect_trajectories(round_index, collection_steps, 0)
         self.update_partial_stats(trajectories)
         return self.split_for_pretraining(trajectories)
@@ -670,6 +680,7 @@ def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel
             gate_partial=config.gate_partial,
             gate_init=config.gate_init,
             tanh_output=config.tanh_model_reward,
+            tanh_scale=config.tanh_scale,
         )
         for _ in range(config.reward_model_ensemble_size)
     ]
@@ -976,6 +987,7 @@ class ExperimentRunner:
             "final_policy_timesteps": config.final_policy_timesteps,
             "final_policy": config.final_policy,
             "collection_timesteps": config.collection_timesteps,
+            "round0_collection_timesteps": config.round0_collection_timesteps,
             "policy_learning_kwargs": config.policy_learning_kwargs or {},
             "tuned_hyperparams": config.tuned_hyperparams,
             "env_normalize": config.env_normalize,
@@ -1015,6 +1027,7 @@ class ExperimentRunner:
                 else None
             ),
             "tanh_model_reward": config.tanh_model_reward if is_preference else None,
+            "tanh_scale": config.tanh_scale if is_preference else None,
             "include_partial_feature": include_partial_feature(config) if is_preference else None,
             "normalize_partial_reward": config.normalize_partial_reward if is_preference else None,
             "partial_alpha": config.partial_alpha if is_preference else None,

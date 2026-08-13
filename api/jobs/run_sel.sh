@@ -2,7 +2,7 @@
 #SBATCH --job-name=sel
 #SBATCH --output=logs/slurm/sel_%A_%a.out
 #SBATCH --error=logs/slurm/sel_%A_%a.err
-#SBATCH --time=16:00:00
+#SBATCH --time=32:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=8G
 #SBATCH --array=1-280
@@ -17,7 +17,7 @@ set -euo pipefail
 #   mkdir -p logs/slurm
 #   sbatch --array=1-280 jobs/run_sel.sh
 #
-# Three arms per environment, 5 seeds, 1M timesteps each:
+# Three arms per environment, 5 seeds, 2M timesteps each:
 #   true      ground-truth reward, 0 labels      -> the ceiling (black)
 #   vanilla   preference RLHF, no prior, q350    -> the floor   (green)
 #   <prior>   the hand-written prior alone       -> the candidate (red)
@@ -34,15 +34,21 @@ set -euo pipefail
 # 1. n_steps 2048 -> 256, with n_envs 8.
 #    SB3's default n_steps=2048 assumes ONE env, i.e. a 2048-sample rollout and
 #    488 PPO iterations per million steps. At n_envs=8 the same setting makes a
-#    16384-sample rollout and only 61 iterations per million - and this grid runs
-#    1M, not the 2-3M the archive used. 61 policy updates is not a converged run
-#    on any of these environments, and under-training the CEILING is the one
-#    error that would silently manufacture the result we are looking for.
+#    16384-sample rollout and only 61 iterations per million; even at this
+#    grid's 2M that is 122 policy updates, not a converged run on any of these
+#    environments, and under-training the CEILING is the one error that would
+#    silently manufacture the result we are looking for.
 #    n_steps=256 x n_envs=8 restores exactly the SB3 default rollout of 2048
-#    samples and 488 iterations, while keeping the 8-way wall-clock speedup.
-#    Ignoring the reference n_envs is what pinned Hopper at its survive-only
-#    optimum in an earlier grid; this is that lesson applied in the other
-#    direction.
+#    samples and 488 iterations per million, while keeping the 8-way wall-clock
+#    speedup. Ignoring the reference n_envs is what pinned Hopper at its
+#    survive-only optimum in an earlier grid; this is that lesson applied in the
+#    other direction.
+#
+# 3. ent_coef 0 -> 0.01, every arm alike.
+#    A small entropy bonus keeps some exploration alive near the instability
+#    boundary (Walker2d especially) instead of letting the policy entropy
+#    collapse to zero early. Applied uniformly so no arm's curve owes its shape
+#    to a knob the others lack.
 #
 # 2. --preset generic on every MuJoCo cell.
 #    MuJoCoSuite.default_ppo_hyperparams applies an Optuna-tuned rl-zoo block to
@@ -70,7 +76,9 @@ fi
 HELP_TEXT="$(python -m rcomp train --help)"
 for FLAG in --policy-learning-kwargs --preset --ensemble-training --round0-data-protocol \
             --tanh-model-reward --dedicated-query-rng --ensemble-bootstrap \
-            --reward-model-train-accuracy-stop --final-policy --n-envs; do
+            --reward-model-train-accuracy-stop --final-policy --n-envs \
+            --round0-collection-timesteps --tanh-scale \
+            --active-query-strategy --active-candidate-protocol; do
   if [[ "$HELP_TEXT" != *"$FLAG"* ]]; then
     echo "checked-out rcomp CLI is missing required flag: $FLAG -- git pull" >&2
     exit 2
@@ -95,9 +103,8 @@ fi
 # than the fragment yields nothing at all - that is how 16 Walker2d cells in PRE4
 # starved to 2-3 pairs a round on fragment 50. Walker2d therefore gets 10.
 #
-# COLLECTION is sized so round 0 can still buy its 70 pairs (140 fragments) from
-# the worst case. With --round0-data-protocol separate, round 0 collects two
-# independent streams of COLLECTION steps and queries only the second.
+# COLLECTION is sized so EVERY round can buy its 70 pairs (140 fragments) from
+# the worst case; rounds 1-4 use it as-is.
 #   ll        40000 / 104 = 384 eps x 4 frags  = ~1500
 #   reacher   20000 /  50 = 400 eps x 2        =   800
 #   pusher    20000 / 100 = 200 eps x 4        =   800
@@ -105,13 +112,20 @@ fi
 #   ant       40000 /  76 = 526 eps x 3        =  1578
 #   swimmer / cheetah / standup  50000 / 1000 x 20 = 1000
 #
+# ROUND 0 is overridden to 50000 everywhere (--round0-collection-timesteps):
+# the untrained policy is the most diverse sampler the run will ever see, so it
+# earns a bigger sample; later rounds do not get the same benefit and cost more
+# to inflate. With --round0-data-protocol separate, round 0 collects TWO
+# independent streams of 50000 and queries only the second. For the three
+# 1000-step environments the override equals COLLECTION and changes nothing.
+#
 # EVALEP: fewer episodes on the three environments that cannot terminate, where
 # only the initial state varies; more where the episode length itself is random.
 # EvalCallback and ComponentEvalCallback each run EVALEP episodes at every
 # eval point, so this is the dominant cost on the 1000-step environments.
 # ---------------------------------------------------------------------------
 PARTIAL=""
-PPO_KWARGS='{n_steps:256}'
+PPO_KWARGS='{n_steps:256,ent_coef:0.01}'
 PRESET=(--preset generic)
 
 case "$CELL" in
@@ -132,7 +146,7 @@ case "$CELL" in
     # grid is measuring would be an artifact of the discount, not the task.
     SUITE=mujoco; ENV=Swimmer-v5;          MODULE=sel_swimmer
     FRAGMENT=50; COLLECTION=50000; EVALEP=5
-    PPO_KWARGS='{n_steps:256,gamma:0.9999}' ;;
+    PPO_KWARGS='{n_steps:256,gamma:0.9999,ent_coef:0.01}' ;;
   cheetah)
     SUITE=mujoco; ENV=HalfCheetah-v5;      MODULE=sel_halfcheetah
     FRAGMENT=50; COLLECTION=50000; EVALEP=5 ;;
@@ -184,7 +198,7 @@ fi
 ARGS=(
   --suite "$SUITE" --env-id "$ENV"
   --n-envs 8 --policy-learning-kwargs "$PPO_KWARGS"
-  --timesteps 1000000 --seed "$SEED"
+  --timesteps 2000000 --seed "$SEED"
   --final-policy last
   --eval-freq 20000 --n-eval-episodes "$EVALEP" --final-eval-episodes 30
   --run-name "$RUNNAME" --log-dir "$LOGDIR"
@@ -195,9 +209,23 @@ ARGS=(
 # minus --holdout-pairs. The holdout is an oracle diagnostic for composition
 # experiments; here the vanilla arm is only a reference line and the fragments
 # are better spent on queries.
+#
+# Four deliberate departures from the final grid, all aimed at the RLHF loop:
+#   --active-learning + ensemble strategy + pool protocol: B-Pref-style
+#     disagreement-based query selection over a 10x candidate pool
+#     (--active-pool-multiplier defaults to 10). Round 0 stays uniform
+#     automatically because query_model is None before any training; the
+#     disagreement path only engages from round 1 on. --ensemble-bootstrap
+#     (already set) is what gives the members something to disagree about.
+#   --round0-collection-timesteps 50000: see the ROUND 0 note above.
+#   --tanh-scale 5: same hard [-1,1] bound as tanh(x), but tanh(x/5) keeps
+#     gradients alive instead of vanishing near saturation.
+#   --reward-model-batch-size 32 (not 128): at 128, round 0's 70 pairs are one
+#     single batch; 32 sub-batches meaningfully from round 0 on.
 RM=(
   --query-budget 350 --rlhf-rounds 5
   --collection-timesteps "$COLLECTION" --fragment-length "$FRAGMENT"
+  --round0-collection-timesteps 50000
   --reward-hidden-sizes 256,256,256
   --reward-model-ensemble-size 3
   --reward-model-lr 0.0003
@@ -211,7 +239,10 @@ RM=(
   --round0-data-protocol separate
   --dedicated-query-rng
   --tanh-model-reward
-  --no-active-learning
+  --tanh-scale 5
+  --active-learning
+  --active-query-strategy ensemble
+  --active-candidate-protocol pool
 )
 
 case "$VARIANT" in
