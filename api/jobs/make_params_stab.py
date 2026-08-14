@@ -15,11 +15,15 @@ the fixes are aimed at:
 
     HalfCheetah-v5  true  1044 1046 1326 1498 1853   (final, per seed)
                     -> UNIMODAL AND STUCK, not the 45/55 mode split the archive
-                       recorded for its non-true arms. All five seeds sit in the
-                       slow gait against an rl-zoo PPO reference of 5819 @ 1M.
-                       It is also BELOW its own prior arm (shc_forward median
-                       1586) and below its own vanilla arm (median 2058), so the
-                       premise "true is the ceiling" fails outright here.
+                       recorded for its non-true arms. It is BELOW its own prior
+                       arm (shc_forward median 1586) and below its own vanilla
+                       arm (median 2058), so the premise "true is the ceiling"
+                       fails outright here. The plateau is reached by ~200k and
+                       the last quarter is 163 BELOW the quarter before it in 5/5
+                       seeds, so this is a converged local optimum rather than a
+                       run that needs more time; the gait is real but slow (1.24
+                       and 1.73 m/s on seeds 3 and 0) and action noise settled at
+                       std 0.13-0.16, so exploration did not collapse either.
                        The mode split is real but lives in the OTHER arms:
                        shc_forward 1324/1560/1586 | 3143/3543.
 
@@ -46,10 +50,10 @@ THE TWO TREATMENTS
             noise. sde_sample_freq is left at SB3's default -1, which resamples
             the noise matrix once per rollout, i.e. every n_steps=256 steps.
             No environment or reward change, so evaluation is untouched and no
-            train/eval mismatch exists. Note rl-zoo pairs use_sde with
-            sde_sample_freq 4 in every block where it uses it at all, and has no
-            gSDE block for Walker2d or HalfCheetah - -1 is SB3's default, not a
-            tuned value.
+            train/eval mismatch exists. Note the preset file pairs use_sde
+            with sde_sample_freq 4 in every block where it uses it at all, and
+            has no gSDE block for Walker2d or HalfCheetah - -1 is SB3's default,
+            not a tuned value.
 
     noterm  --unhealthy-penalty 1.0 on the TRAINING env only: stop terminating
             when unhealthy, and replace the boolean +1/0 healthy bonus with a

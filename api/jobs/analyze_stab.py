@@ -60,9 +60,11 @@ TREATMENT_LABEL = {
     "sde": "experiment 1: use_sde=True",
     "noterm": "experiment 2: no termination + persistent +-1",
 }
-# The rl-zoo PPO reference at 1M, for scale only. Keyed -v3; no published PPO
-# block was tuned on any -v5 env, so this is a landmark, not a target.
-ZOO_REFERENCE = {"cheetah": 5819.0, "walker": 3478.8, "ant": 1327.2}
+# No published benchmark score is printed here on purpose. Every tuned PPO block
+# and every benchmark number in circulation is keyed to -v2/-v3/-v4, and the -v5
+# envs are not the same task (Ant-v5 changed both its observation space and its
+# reward relative to -v4). The only valid reference for a -v5 arm is another -v5
+# arm measured in this project, which is what the ctrl rows are for.
 
 
 def load(root: Path) -> list[dict]:
@@ -207,7 +209,7 @@ def main() -> int:
         present = [t for t in TREATMENTS if any(index.get((cell, t, arm)) for arm in ("true", "partial"))]
         if not present:
             continue
-        print(f"=== {ENV_NAME[cell]}  (rl-zoo PPO {ZOO_REFERENCE[cell]:.0f} @ 1M on the -v3 env) ===")
+        print(f"=== {ENV_NAME[cell]} ===")
         for treatment in present:
             print(f"  {TREATMENT_LABEL[treatment]}")
             for arm in ("true", "partial"):

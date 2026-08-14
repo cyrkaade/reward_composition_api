@@ -41,7 +41,7 @@ set -euo pipefail
 # every control here is re-run rather than read off the archive.
 #
 # --preset generic on every cell: MuJoCoSuite.default_ppo_hyperparams applies a
-# tuned rl-zoo block to Reacher-v5 whenever preset is "auto" (the default) and
+# tuned preset block to Reacher-v5 whenever preset is "auto" (the default) and
 # NOT gated behind --tuned-hyperparams. No Reacher cell is in this pilot, but
 # passing `generic` explicitly is what makes "stock SB3" a checked claim rather
 # than an assumption. --tuned-hyperparams is not passed anywhere.
