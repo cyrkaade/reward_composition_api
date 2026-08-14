@@ -96,6 +96,17 @@ class ExperimentConfig:
         "Use a deterministic per-round Python RNG for query pairing/candidate matchings so reward-training and pretraining shuffles cannot change which pairs are considered",
     )
 
+    unhealthy_penalty: float | None = _f(
+        None,
+        "TRAINING-ENV ONLY: replace the healthy/unhealthy termination cliff with a persistent "
+        "reward of +P while healthy and -P while unhealthy, and stop terminating on unhealthy "
+        "(TimeLimit truncation is unchanged). Off when omitted, which leaves the environment "
+        "exactly as it is today. Requires an env with an 'is_healthy' property (Walker2d-v5, "
+        "Ant-v5, Hopper-v5, Humanoid-v5). Every evaluation path keeps scoring the STANDARD "
+        "environment; when this is set the final policy is additionally scored on the modified "
+        "environment and recorded as 'selected_policy_modified_env_reward_mean'",
+    )
+
     env_normalize: str = _f(
         "auto",
         "Whether to wrap the training env in VecNormalize (obs + reward): 'auto' asks the suite "
@@ -333,6 +344,8 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError(f"Unsupported mode '{config.mode}'. Supported modes: {', '.join(TRAIN_MODES)}")
     # Checked here, not only by argparse: a typo would otherwise fall through
     # the `mode == "on"` test in probe_spaces and SILENTLY disable normalization.
+    if config.unhealthy_penalty is not None and config.unhealthy_penalty <= 0:
+        raise ConfigError("unhealthy_penalty must be positive; omit the flag to leave the environment unmodified")
     if config.env_normalize not in ENV_NORMALIZE_MODES:
         raise ConfigError(
             f"Unsupported env_normalize '{config.env_normalize}'. Supported: {', '.join(ENV_NORMALIZE_MODES)}"

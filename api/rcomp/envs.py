@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 from gymnasium.spaces.utils import flatten
@@ -47,6 +48,74 @@ def action_for_space(space: spaces.Space, action):
     if isinstance(space, spaces.MultiBinary):
         return np.asarray(action, dtype=space.dtype).reshape(space.shape)
     return np.asarray(action, dtype=getattr(space, "dtype", np.float32)).reshape(space.shape)
+
+
+class UnhealthyPenaltyWrapper(gym.Wrapper):
+    """Trade the healthy/unhealthy TERMINATION cliff for a persistent penalty.
+
+    Opt-in, applied to the TRAINING env only (see ``RlhfTrainer.train_env_fn``);
+    every evaluation path keeps using ``suite.make_raw_env`` unchanged, so the
+    yardstick a run is scored on is the same standard environment every other
+    arm in the project is scored on.
+
+    Two changes, and only these two:
+
+    1. ``terminated`` is forced ``False``. In gymnasium 1.2.3 the sole source of
+       ``terminated`` in ``walker2d_v5.py`` (L293) and ``ant_v5.py`` (L359) is
+       ``(not self.is_healthy) and self._terminate_when_unhealthy``, so forcing
+       it is exactly ``terminate_when_unhealthy=False`` -- verified step for step
+       against the constructor route (identical observations and identical
+       rewards over 400 steps on both envs, only the flag differs). Doing it in a
+       wrapper rather than through ``gym.make`` kwargs is what keeps the change
+       off the evaluation envs. ``gym.make`` applies ``TimeLimit`` INSIDE this
+       wrapper, so truncation at 1000 steps is untouched.
+
+    2. The env's healthy bonus is a boolean gate -- ``healthy_reward`` is
+       ``is_healthy * self._healthy_reward``, i.e. +1 while healthy and 0 while
+       unhealthy -- so there is no constructor argument that produces a genuine
+       penalty (a negative ``healthy_reward`` weight gives -1 while healthy and 0
+       while unhealthy, the opposite of what is wanted). This wrapper subtracts
+       that term and adds ``+penalty`` while healthy / ``-penalty`` while not.
+
+    The replacement is written back into ``info["reward_survive"]`` as well as
+    into the reward, because the hand-written priors read their survive term
+    from that key (``partials/sel_walker2d.py``, ``partials/sel_ant.py``).
+    Without it the ``partial`` arm would receive the termination removal but not
+    the penalty, and would no longer be the same treatment as the ``true`` arm.
+
+    NOTE ON MAGNITUDE: falling costs ``2 * penalty`` per step here (the healthy
+    bonus lost plus the penalty gained), whereas in the standard environment it
+    forfeits the entire remaining episode -- roughly 3.5/step for a Walker2d
+    already running at 2.5 m/s. At ``penalty=1.0`` the modified objective is
+    therefore more tolerant of falling than the true one, by about the forward
+    reward rate. That gap is what the second, modified-env evaluation measures.
+    """
+
+    def __init__(self, env, penalty: float = 1.0):
+        super().__init__(env)
+        if not hasattr(env.unwrapped, "is_healthy"):
+            raise ValueError(
+                f"{type(env.unwrapped).__name__} has no 'is_healthy' property; the unhealthy "
+                "penalty only applies to environments with a healthy/unhealthy termination rule "
+                "(Walker2d-v5, Ant-v5, Hopper-v5, Humanoid-v5)"
+            )
+        self.penalty = float(penalty)
+
+    def step(self, action):
+        observation, reward, _terminated, truncated, info = self.env.step(action)
+        replacement = self.penalty if bool(self.env.unwrapped.is_healthy) else -self.penalty
+        info = dict(info)
+        reward = float(reward) - float(info.get("reward_survive", 0.0)) + replacement
+        info["reward_survive"] = replacement
+        info["unhealthy_penalty"] = self.penalty
+        return observation, reward, False, truncated, info
+
+
+def apply_unhealthy_penalty(env, penalty: float | None):
+    """Wrap ``env`` when ``penalty`` is set; return it untouched when it is not."""
+    if penalty is None:
+        return env
+    return UnhealthyPenaltyWrapper(env, penalty=penalty)
 
 
 def make_train_env(env_fn, n_envs: int, monitor_dir: Path, normalize: bool):
