@@ -18,7 +18,7 @@ from stable_baselines3.common.vec_env import VecNormalize
 
 from .config import PREFERENCE_MODES, ExperimentConfig, normalize_experiment_config
 from .data import Trajectory
-from .envs import TrajectoryCollector, apply_unhealthy_penalty, load_eval_env, make_eval_env, make_train_env
+from .envs import TrajectoryCollector, load_eval_env, make_eval_env, make_train_env
 from .evaluation import (
     ComponentEvalCallback,
     RunPaths,
@@ -735,16 +735,6 @@ class ExperimentRunner:
         probe_env.close()
         return observation_space, action_space, normalize, hyperparams
 
-    def make_train_raw_env(self):
-        """The raw env the POLICY trains on -- the only place --unhealthy-penalty applies.
-
-        Evaluation deliberately does not go through here: ``build_envs_and_callbacks``,
-        ``evaluate_components`` and ``select_final_policy`` all call
-        ``suite.make_raw_env`` directly, so a modified-env run is still scored on
-        the same standard environment as every other arm in the project.
-        """
-        return self.make_train_raw_env_for_id(self.config.env_id)
-
     def build_runtime(self, composition: str, observation_space, action_space, **kwargs) -> LearnedRewardRuntime:
         return LearnedRewardRuntime(
             env_id=self.config.env_id,
@@ -796,12 +786,10 @@ class ExperimentRunner:
         observation_space, action_space, normalize, hyperparams = self.probe_spaces()
 
         if config.mode == "true":
-            env_fn = self.make_train_raw_env
+            env_fn = lambda: self.suite.make_raw_env(config.env_id)
         else:
             runtime = self.build_runtime("partial", observation_space, action_space)
-            # The penalty wrapper sits INSIDE PreferenceRewardWrapper so the partial
-            # sees the rewritten info["reward_survive"].
-            env_fn = lambda: PreferenceRewardWrapper(self.make_train_raw_env(), runtime)
+            env_fn = lambda: PreferenceRewardWrapper(self.suite.make_raw_env(config.env_id), runtime)
 
         train_env, eval_env, callbacks = self.build_envs_and_callbacks(env_fn, run_dir, normalize)
         model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **hyperparams)
@@ -837,7 +825,7 @@ class ExperimentRunner:
             include_partial_feature=include_partial_feature(config),
         )
         train_env, eval_env, callbacks = self.build_envs_and_callbacks(
-            lambda: PreferenceRewardWrapper(self.make_train_raw_env(), runtime),
+            lambda: PreferenceRewardWrapper(self.suite.make_raw_env(config.env_id), runtime),
             run_dir,
             normalize,
         )
@@ -861,42 +849,6 @@ class ExperimentRunner:
         ).run()
 
         return self.save_and_report(model, train_env, eval_env, run_dir, synthetic_queries=total_queries, runtime=runtime)
-
-    def evaluate_modified_env(self, final_policy, final_eval_env) -> dict:
-        """Score the final policy a SECOND time, on the env it actually trained on.
-
-        Only runs with --unhealthy-penalty. The primary number
-        ('selected_policy_true_reward_mean') stays the standard-environment score,
-        so the comparison against every other arm is unchanged; this one sits
-        beside it and makes the size of the train/eval mismatch visible instead of
-        leaving it unmeasured. Observation normalization statistics are shared with
-        the standard eval env -- only the reward and the termination rule differ.
-        """
-        if self.config.unhealthy_penalty is None:
-            return {}
-        modified_env = make_eval_env(
-            self.make_train_raw_env_for_id,
-            self.config.env_id,
-            final_eval_env if isinstance(final_eval_env, VecNormalize) else None,
-        )
-        try:
-            mean_reward, std_reward = evaluate_policy(
-                final_policy,
-                modified_env,
-                n_eval_episodes=self.config.final_eval_episodes,
-                deterministic=True,
-                return_episode_rewards=False,
-            )
-        finally:
-            modified_env.close()
-        return {
-            "selected_policy_modified_env_reward_mean": float(mean_reward),
-            "selected_policy_modified_env_reward_std": float(std_reward),
-        }
-
-    def make_train_raw_env_for_id(self, env_id: str):
-        """``make_train_raw_env`` in the (env_id) -> env shape ``make_eval_env`` expects."""
-        return apply_unhealthy_penalty(self.suite.make_raw_env(env_id), self.config.unhealthy_penalty)
 
     def trajectory_converter(self, runtime: LearnedRewardRuntime):
         def convert(trajectory: Trajectory):
@@ -995,7 +947,6 @@ class ExperimentRunner:
             "selected_policy_true_reward_mean": float(mean_reward),
             "selected_policy_true_reward_std": float(std_reward),
             "selected_policy_components": selected_stats,
-            **self.evaluate_modified_env(final_policy, final_eval_env),
             **self.runtime_metadata(runtime),
         }
 
@@ -1043,9 +994,6 @@ class ExperimentRunner:
             # What the suite/flag actually resolved to, so archived runs (which
             # predate the flag and all record "auto") stay readable.
             "env_normalize_applied": self.normalize_applied,
-            # None on every archived run and on every unmodified run; a number
-            # means the TRAINING env had its termination cliff replaced.
-            "unhealthy_penalty": config.unhealthy_penalty,
             "synthetic_queries": synthetic_queries,
             "query_budget": config.query_budget if is_preference else 0,
             "fragment_length": config.fragment_length if is_preference else None,
