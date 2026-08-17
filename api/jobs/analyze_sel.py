@@ -53,7 +53,8 @@ from pathlib import Path
 
 import numpy as np
 
-CELLS = ("ll", "reacher", "pusher", "swimmer", "cheetah", "hopper", "walker", "ant", "standup")
+CELLS = ("ll", "reacher", "pusher", "swimmer", "cheetah", "hopper", "walker", "ant", "standup",
+         "bipedal", "mspacman", "qbert")
 
 ENV_LABEL = {
     "ll": "LunarLander-v3",
@@ -65,6 +66,9 @@ ENV_LABEL = {
     "walker": "Walker2d-v5",
     "ant": "Ant-v5",
     "standup": "HumanoidStandup-v5",
+    "bipedal": "BipedalWalker-v3",
+    "mspacman": "ALE/MsPacman-v5",
+    "qbert": "ALE/Qbert-v5",
 }
 
 BAND_LOW, BAND_HIGH = 0.2, 0.8
