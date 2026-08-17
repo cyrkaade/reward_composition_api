@@ -69,9 +69,9 @@ ENV_LABEL = {
 BAND_LOW, BAND_HIGH = 0.2, 0.8
 
 
-def load_runs(root: Path) -> list[dict]:
+def load_runs(root: Path, prefix: str = "sel") -> list[dict]:
     runs = []
-    for meta_path in sorted(root.glob("sel_*/*/metadata.json")):
+    for meta_path in sorted(root.glob(f"{prefix}_*/*/metadata.json")):
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         run_dir = meta_path.parent
         # log dir is logs/sel_<cell>_<variant>; the variant can contain '_', the
@@ -168,8 +168,21 @@ def write_csv(runs: list[dict], path: Path) -> None:
     print(f"wrote per-seed CSV: {path}  ({len(runs)} runs)")
 
 
-def report_environments(grouped, cells) -> dict[str, tuple[float, float]]:
-    """Print the ceiling/floor table and return (start, true_final) per cell."""
+def report_environments(grouped, cells) -> tuple[dict[str, tuple[float, float]], set[str]]:
+    """Print the ceiling/floor table.
+
+    Returns (anchors, broken). `anchors` maps cell -> (start, true_final) for
+    cells where partiality is defined at all; `broken` holds the cells where it
+    is NOT, i.e. where the true arm ENDS BELOW where it STARTED.
+
+    That case is not hypothetical. In the first grid Ant's true arm started at
+    +511.8 (a stand-still local optimum found before any real learning) and
+    ended at -14.5, so span = -526.3. Dividing by a negative span flips the sign
+    of every partiality in the cell: sant_cap10, which finished at -1275.9
+    against a true arm at -14.5, scored partiality 3.40 and was labelled
+    "BEATS THE TRUE ARM". It does not; it is 89x worse. Any cell whose span is
+    <= 0 has no ceiling to measure against and is refused rather than scored.
+    """
     print("\n" + "=" * 108)
     print("ENVIRONMENT QUALIFICATION -- read this before any prior contrast")
     print("=" * 108)
@@ -178,6 +191,7 @@ def report_environments(grouped, cells) -> dict[str, tuple[float, float]]:
         f"{'seed max':>10s} {'spread/med':>11s} {'start':>10s} {'vanilla':>10s} {'labels':>9s}"
     )
     anchors = {}
+    broken: set[str] = set()
     for cell in cells:
         true_runs = grouped.get((cell, "true"), [])
         vanilla_runs = grouped.get((cell, "vanilla"), [])
@@ -200,6 +214,15 @@ def report_environments(grouped, cells) -> dict[str, tuple[float, float]]:
             f"{min(finals):10.1f} {max(finals):10.1f} {spread:11.2f} {start:10.1f} "
             f"{vanilla_final:10.1f} {delivery:>9s}"
         )
+        if true_final - start <= 0:
+            broken.add(cell)
+            print(
+                f"{'':9s} ^^ NO CEILING: the true arm ends at or below its own starting point "
+                f"(span {true_final - start:.1f}).\n"
+                f"{'':9s}    partiality is undefined here and every prior in this cell is refused,\n"
+                f"{'':9s}    not scored -- a negative span would invert the sign of the whole column."
+            )
+            continue
         anchors[cell] = (start, true_final)
     print(
         "\nspread/med is (max-min)/|median| over the 5 true-arm seeds. A cell whose ceiling\n"
@@ -207,14 +230,26 @@ def report_environments(grouped, cells) -> dict[str, tuple[float, float]]:
         "labels is delivered/budget on the vanilla arm; a shortfall means the floor is\n"
         "not the floor it claims to be."
     )
-    return anchors
+    return anchors, broken
 
 
-def report_priors(grouped, anchors, cells) -> None:
+def report_priors(grouped, anchors, cells, broken: set[str] | None = None) -> None:
+    broken = broken or set()
     print("\n" + "=" * 108)
     print("PRIOR CANDIDATES -- partiality = (arm - start) / (true - start), target band 0.2 to 0.8")
     print("=" * 108)
     for cell in cells:
+        if cell in broken:
+            priors = sorted(
+                variant for (this_cell, variant) in grouped
+                if this_cell == cell and variant not in ("true", "vanilla")
+            )
+            print(f"\n--- {cell} / {ENV_LABEL[cell]}   REFUSED: no ceiling, partiality undefined")
+            print(f"    raw finals only, in the environment's own units:")
+            for variant in priors:
+                finals = [run["curve_final_mean"] for run in grouped[(cell, variant)]]
+                print(f"    {variant:18s} {med(finals):10.1f}   per-seed {[round(v, 1) for v in finals]}")
+            continue
         if cell not in anchors:
             continue
         start, true_final = anchors[cell]
@@ -327,34 +362,40 @@ def plot(grouped, cells, output: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--root", default="logs", help="directory holding the sel_* log dirs")
+    parser.add_argument("--root", default="logs", help="directory holding the <prefix>_* log dirs")
+    parser.add_argument("--prefix", default="sel",
+                        help="log-dir prefix: 'sel' for the original grid, 'sel2' for the "
+                             "target_kl rerun. Defaults for --csv/--figure follow it.")
     parser.add_argument("--cell", action="append", choices=CELLS, help="restrict to these cells (repeatable)")
-    parser.add_argument("--csv", default="logs/sel_summary.csv")
-    parser.add_argument("--figure", default="logs/sel_curves.png")
+    parser.add_argument("--csv", default=None)
+    parser.add_argument("--figure", default=None)
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
+    csv_path = args.csv or f"logs/{args.prefix}_summary.csv"
+    figure_path = args.figure or f"logs/{args.prefix}_curves.png"
+
     root = Path(args.root)
-    runs = load_runs(root)
+    runs = load_runs(root, args.prefix)
     if not runs:
-        print(f"no sel_* runs with metadata.json under {root.resolve()}")
+        print(f"no {args.prefix}_* runs with metadata.json under {root.resolve()}")
         return
 
     cells = tuple(args.cell) if args.cell else CELLS
     runs = [run for run in runs if run["cell"] in cells]
     grouped = by_arm(runs)
 
-    write_csv(runs, Path(args.csv))
+    write_csv(runs, Path(csv_path))
     expected = {(cell, variant) for (cell, variant) in grouped}
     short = [f"{cell}/{variant} ({len(grouped[(cell, variant)])}/5)" for cell, variant in sorted(expected)
              if len(grouped[(cell, variant)]) != 5]
     if short:
         print(f"\nINCOMPLETE ARMS (not 5 seeds): {', '.join(short)}")
 
-    anchors = report_environments(grouped, cells)
-    report_priors(grouped, anchors, cells)
+    anchors, broken = report_environments(grouped, cells)
+    report_priors(grouped, anchors, cells, broken)
     if not args.no_plot:
-        plot(grouped, cells, Path(args.figure))
+        plot(grouped, cells, Path(figure_path))
 
 
 if __name__ == "__main__":
