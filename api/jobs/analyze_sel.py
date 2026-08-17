@@ -53,7 +53,7 @@ from pathlib import Path
 
 import numpy as np
 
-CELLS = ("ll", "reacher", "pusher", "swimmer", "cheetah", "walker", "ant", "standup")
+CELLS = ("ll", "reacher", "pusher", "swimmer", "cheetah", "hopper", "walker", "ant", "standup")
 
 ENV_LABEL = {
     "ll": "LunarLander-v3",
@@ -61,6 +61,7 @@ ENV_LABEL = {
     "pusher": "Pusher-v5",
     "swimmer": "Swimmer-v5",
     "cheetah": "HalfCheetah-v5",
+    "hopper": "Hopper-v5",
     "walker": "Walker2d-v5",
     "ant": "Ant-v5",
     "standup": "HumanoidStandup-v5",
