@@ -5,13 +5,16 @@
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --gpus=1
+#SBATCH --gpus=a100:1
 #SBATCH --array=1-15
 #SBATCH --requeue
 set -euo pipefail
 
 # Fifteen independent true-reward runs: three Atari games x seeds 0..4.
 # This intentionally contains no partial, reward model, or preference query.
+
+nvidia-smi --query-gpu=name --format=csv,noheader
+python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available(); print('device', torch.cuda.get_device_name(0), 'capability', torch.cuda.get_device_capability(0)); print('cuda smoke', torch.ones(1, device='cuda').item())"
 
 PARAMS_FILE="${PARAMS_FILE:-jobs/params_atari_true_smoke.txt}"
 EXPECTED_ROWS=15
