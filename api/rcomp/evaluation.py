@@ -5,6 +5,8 @@ final-policy selection."""
 from __future__ import annotations
 
 import csv
+import random
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,7 +15,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from stable_baselines3.common.callbacks import BaseCallback
+import torch as th
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
 from .envs import action_for_space
 from .partials import PartialSpec
@@ -38,12 +41,24 @@ class RunPaths:
         return self.run_dir / "eval" / "evaluations.npz"
 
     @property
+    def stochastic_eval_log(self) -> Path:
+        return self.run_dir / "eval_stochastic" / "evaluations.npz"
+
+    @property
     def true_reward_curve(self) -> Path:
         return self.run_dir / "true_reward_curve.png"
 
     @property
+    def stochastic_true_reward_curve(self) -> Path:
+        return self.run_dir / "stochastic_true_reward_curve.png"
+
+    @property
     def final_component_evaluation(self) -> Path:
         return self.run_dir / "eval" / "final_component_evaluation.csv"
+
+    @property
+    def stochastic_final_component_evaluation(self) -> Path:
+        return self.run_dir / "eval_stochastic" / "final_component_evaluation.csv"
 
     @property
     def metadata(self) -> Path:
@@ -160,6 +175,42 @@ def write_component_summary_csv(path: Path, timestep: int, stats: dict, fieldnam
         writer.writerow(row)
 
 
+@contextmanager
+def isolated_evaluation_rng(seed: int):
+    """Make sampled-policy evaluation reproducible without perturbing training."""
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = th.random.get_rng_state()
+    cuda_states = th.cuda.get_rng_state_all() if th.cuda.is_initialized() else None
+    try:
+        random.seed(seed)
+        np.random.seed(seed % (2**32 - 1))
+        th.manual_seed(seed)
+        yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        th.random.set_rng_state(torch_state)
+        if cuda_states is not None:
+            th.cuda.set_rng_state_all(cuda_states)
+
+
+class SeededEvalCallback(EvalCallback):
+    """An EvalCallback whose environment and action RNG are isolated per checkpoint."""
+
+    def __init__(self, *args, evaluation_seed: int, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.evaluation_seed = int(evaluation_seed)
+
+    def _on_step(self) -> bool:
+        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            seed = self.evaluation_seed + self.num_timesteps
+            self.eval_env.seed(seed)
+            with isolated_evaluation_rng(seed):
+                return super()._on_step()
+        return super()._on_step()
+
+
 class ComponentEvalCallback(BaseCallback):
     def __init__(
         self,
@@ -170,6 +221,7 @@ class ComponentEvalCallback(BaseCallback):
         eval_freq: int,
         n_eval_episodes: int,
         seed: int = 10_000,
+        deterministic: bool = True,
         verbose: int = 0,
     ):
         super().__init__(verbose=verbose)
@@ -180,6 +232,7 @@ class ComponentEvalCallback(BaseCallback):
         self.eval_freq = max(int(eval_freq), 1)
         self.n_eval_episodes = n_eval_episodes
         self.seed = seed
+        self.deterministic = deterministic
 
     def _init_callback(self) -> None:
         self.log_path.parent.mkdir(exist_ok=True, parents=True)
@@ -192,15 +245,18 @@ class ComponentEvalCallback(BaseCallback):
         if self.n_calls % self.eval_freq != 0:
             return True
 
-        stats = evaluate_components(
-            self.model,
-            self.suite,
-            self.env_id,
-            custom_partial=self.custom_partial,
-            stats_source=self.training_env,
-            n_eval_episodes=self.n_eval_episodes,
-            seed=self.seed + self.num_timesteps,
-        )
+        seed = self.seed + self.num_timesteps
+        with isolated_evaluation_rng(seed):
+            stats = evaluate_components(
+                self.model,
+                self.suite,
+                self.env_id,
+                custom_partial=self.custom_partial,
+                stats_source=self.training_env,
+                n_eval_episodes=self.n_eval_episodes,
+                seed=seed,
+                deterministic=self.deterministic,
+            )
         write_component_summary_csv(self.log_path, self.num_timesteps, stats, component_fieldnames(self.custom_partial))
         if self.verbose:
             values = ", ".join(f"{key}={stats.get(f'mean_{key}', 0.0):.3f}" for key in self.suite.summary_component_keys)

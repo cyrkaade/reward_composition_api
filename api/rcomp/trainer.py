@@ -13,7 +13,7 @@ import numpy as np
 import torch as th
 from gymnasium.spaces.utils import flatdim
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalCallback, StopTrainingOnRewardThreshold
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList, StopTrainingOnRewardThreshold
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import VecNormalize
 
@@ -23,8 +23,10 @@ from .envs import TrajectoryCollector, load_eval_env, make_eval_env, make_train_
 from .evaluation import (
     ComponentEvalCallback,
     RunPaths,
+    SeededEvalCallback,
     evaluate_components,
     component_fieldnames,
+    isolated_evaluation_rng,
     report_eval_curve,
     select_final_policy,
     write_component_summary_csv,
@@ -721,6 +723,7 @@ class ExperimentRunner:
         # Resolved in probe_spaces(); recorded in metadata so a run says what it
         # actually did rather than only what was asked for.
         self.normalize_applied: bool | None = None
+        self.extra_eval_envs = []
 
     @property
     def run_dir(self) -> Path:
@@ -775,26 +778,58 @@ class ExperimentRunner:
             best_callbacks.append(SaveVecNormalizeOnBest(train_env, run_dir / "best_model" / "best_vecnormalize.pkl"))
         if config.stop_reward is not None:
             best_callbacks.append(StopTrainingOnRewardThreshold(reward_threshold=config.stop_reward, verbose=1))
-        eval_callback = EvalCallback(
+        evaluation_seed = config.seed + 10_000
+        eval_callback = SeededEvalCallback(
             eval_env,
-            best_model_save_path=str(run_dir / "best_model"),
+            best_model_save_path=(
+                None if self.suite.record_stochastic_evaluation else str(run_dir / "best_model")
+            ),
             log_path=str(run_dir / "eval"),
             eval_freq=self.eval_freq(),
             n_eval_episodes=config.n_eval_episodes,
             deterministic=True,
             render=False,
-            callback_on_new_best=CallbackList(best_callbacks) if best_callbacks else None,
+            callback_on_new_best=(
+                None
+                if self.suite.record_stochastic_evaluation
+                else CallbackList(best_callbacks) if best_callbacks else None
+            ),
+            evaluation_seed=evaluation_seed,
         )
+        callbacks: list[BaseCallback] = [eval_callback]
+
+        if self.suite.record_stochastic_evaluation:
+            stochastic_eval_env = make_eval_env(self.suite.make_raw_env, config.env_id, train_env)
+            self.extra_eval_envs.append(stochastic_eval_env)
+            callbacks.insert(
+                0,
+                SeededEvalCallback(
+                    stochastic_eval_env,
+                    best_model_save_path=str(run_dir / "best_model"),
+                    log_path=str(run_dir / "eval_stochastic"),
+                    eval_freq=self.eval_freq(),
+                    n_eval_episodes=config.n_eval_episodes,
+                    deterministic=False,
+                    render=False,
+                    callback_on_new_best=CallbackList(best_callbacks) if best_callbacks else None,
+                    evaluation_seed=evaluation_seed,
+                ),
+            )
         component_callback = ComponentEvalCallback(
-            run_dir / "eval" / "component_evaluations.csv",
+            run_dir
+            / ("eval_stochastic" if self.suite.record_stochastic_evaluation else "eval")
+            / "component_evaluations.csv",
             self.suite,
             config.env_id,
             custom_partial=self.custom_partial,
             eval_freq=self.eval_freq(),
             n_eval_episodes=config.n_eval_episodes,
+            seed=evaluation_seed,
+            deterministic=not self.suite.record_stochastic_evaluation,
             verbose=1,
         )
-        return train_env, eval_env, CallbackList([eval_callback, component_callback])
+        callbacks.append(component_callback)
+        return train_env, eval_env, CallbackList(callbacks)
 
     def train_true_or_partial(self) -> RunResult:
         config = self.config
@@ -901,7 +936,7 @@ class ExperimentRunner:
             vecnormalize_path = paths.vecnormalize
 
         actual_timesteps = int(model.num_timesteps)
-        best_logged_reward, best_logged_timestep = report_eval_curve(
+        deterministic_best_reward, deterministic_best_timestep = report_eval_curve(
             paths.eval_log,
             paths.true_reward_curve,
             max(config.timesteps, actual_timesteps),
@@ -912,21 +947,63 @@ class ExperimentRunner:
             y_floor=suite.curve_y_floor,
         )
 
-        final_stats = evaluate_components(
-            model,
-            suite,
-            config.env_id,
-            custom_partial=self.custom_partial,
-            stats_source=train_env,
-            n_eval_episodes=config.final_eval_episodes,
-            seed=config.seed + 50_000,
+        stochastic_best_reward = None
+        stochastic_best_timestep = None
+        if suite.record_stochastic_evaluation:
+            stochastic_best_reward, stochastic_best_timestep = report_eval_curve(
+                paths.stochastic_eval_log,
+                paths.stochastic_true_reward_curve,
+                max(config.timesteps, actual_timesteps),
+                config.plot_mode,
+                config.smooth_window,
+                x_scale=suite.curve_x_scale,
+                x_label=suite.curve_x_label,
+                y_floor=suite.curve_y_floor,
+            )
+
+        primary_best_reward = (
+            stochastic_best_reward if suite.record_stochastic_evaluation else deterministic_best_reward
         )
+        primary_best_timestep = (
+            stochastic_best_timestep if suite.record_stochastic_evaluation else deterministic_best_timestep
+        )
+
+        final_component_seed = config.seed + 50_000
+        with isolated_evaluation_rng(final_component_seed):
+            final_stats = evaluate_components(
+                model,
+                suite,
+                config.env_id,
+                custom_partial=self.custom_partial,
+                stats_source=train_env,
+                n_eval_episodes=config.final_eval_episodes,
+                seed=final_component_seed,
+                deterministic=True,
+            )
         write_component_summary_csv(
             paths.final_component_evaluation,
             actual_timesteps,
             final_stats,
             component_fieldnames(self.custom_partial),
         )
+        if suite.record_stochastic_evaluation:
+            with isolated_evaluation_rng(final_component_seed):
+                stochastic_final_stats = evaluate_components(
+                    model,
+                    suite,
+                    config.env_id,
+                    custom_partial=self.custom_partial,
+                    stats_source=train_env,
+                    n_eval_episodes=config.final_eval_episodes,
+                    seed=final_component_seed,
+                    deterministic=False,
+                )
+            write_component_summary_csv(
+                paths.stochastic_final_component_evaluation,
+                actual_timesteps,
+                stochastic_final_stats,
+                component_fieldnames(self.custom_partial),
+            )
 
         final_policy, final_eval_env = select_final_policy(
             config,
@@ -938,40 +1015,107 @@ class ExperimentRunner:
             load_best_stats=isinstance(train_env, VecNormalize),
         )
 
-        mean_reward, std_reward = evaluate_policy(
-            final_policy,
-            final_eval_env,
-            n_eval_episodes=config.final_eval_episodes,
-            deterministic=True,
-            return_episode_rewards=False,
-        )
-        selected_stats = evaluate_components(
-            final_policy,
-            suite,
-            config.env_id,
-            custom_partial=self.custom_partial,
-            stats_source=final_eval_env,
-            n_eval_episodes=config.final_eval_episodes,
-            seed=config.seed + 60_000,
-        )
+        selected_eval_seed = config.seed + 60_000
+        final_eval_env.seed(selected_eval_seed)
+        with isolated_evaluation_rng(selected_eval_seed):
+            mean_reward, std_reward = evaluate_policy(
+                final_policy,
+                final_eval_env,
+                n_eval_episodes=config.final_eval_episodes,
+                deterministic=True,
+                return_episode_rewards=False,
+            )
+        with isolated_evaluation_rng(selected_eval_seed):
+            selected_stats = evaluate_components(
+                final_policy,
+                suite,
+                config.env_id,
+                custom_partial=self.custom_partial,
+                stats_source=final_eval_env,
+                n_eval_episodes=config.final_eval_episodes,
+                seed=selected_eval_seed,
+                deterministic=True,
+            )
+
+        stochastic_mean_reward = None
+        stochastic_std_reward = None
+        stochastic_selected_stats = None
+        if suite.record_stochastic_evaluation:
+            stochastic_final_eval_env = make_eval_env(suite.make_raw_env, config.env_id, final_eval_env)
+            stochastic_final_eval_env.seed(selected_eval_seed)
+            try:
+                with isolated_evaluation_rng(selected_eval_seed):
+                    stochastic_mean_reward, stochastic_std_reward = evaluate_policy(
+                        final_policy,
+                        stochastic_final_eval_env,
+                        n_eval_episodes=config.final_eval_episodes,
+                        deterministic=False,
+                        return_episode_rewards=False,
+                    )
+                with isolated_evaluation_rng(selected_eval_seed):
+                    stochastic_selected_stats = evaluate_components(
+                        final_policy,
+                        suite,
+                        config.env_id,
+                        custom_partial=self.custom_partial,
+                        stats_source=stochastic_final_eval_env,
+                        n_eval_episodes=config.final_eval_episodes,
+                        seed=selected_eval_seed,
+                        deterministic=False,
+                    )
+            finally:
+                stochastic_final_eval_env.close()
 
         metadata = {
-            **self.common_metadata(actual_timesteps, synthetic_queries, best_logged_reward, best_logged_timestep),
+            **self.common_metadata(actual_timesteps, synthetic_queries, primary_best_reward, primary_best_timestep),
             "env_slug": suite.slug(config.env_id),
             **suite.extra_metadata(config),
+            "evaluation_policies": (
+                ["stochastic", "deterministic"] if suite.record_stochastic_evaluation else ["deterministic"]
+            ),
+            "primary_evaluation_policy": (
+                "stochastic" if suite.record_stochastic_evaluation else "deterministic"
+            ),
+            "best_logged_deterministic_true_reward": deterministic_best_reward,
+            "best_logged_deterministic_timestep": deterministic_best_timestep,
+            "best_logged_stochastic_true_reward": stochastic_best_reward,
+            "best_logged_stochastic_timestep": stochastic_best_timestep,
             "partial_keys": [self.custom_partial.name] if self.custom_partial else [],
             "component_keys": suite.metadata_component_keys(self.custom_partial),
             "selected_policy_true_reward_mean": float(mean_reward),
             "selected_policy_true_reward_std": float(std_reward),
             "selected_policy_components": selected_stats,
+            "selected_policy_stochastic_true_reward_mean": (
+                float(stochastic_mean_reward) if stochastic_mean_reward is not None else None
+            ),
+            "selected_policy_stochastic_true_reward_std": (
+                float(stochastic_std_reward) if stochastic_std_reward is not None else None
+            ),
+            "selected_policy_stochastic_components": stochastic_selected_stats,
+            "selected_policy_primary_true_reward_mean": float(
+                stochastic_mean_reward if stochastic_mean_reward is not None else mean_reward
+            ),
+            "selected_policy_primary_true_reward_std": float(
+                stochastic_std_reward if stochastic_std_reward is not None else std_reward
+            ),
             **self.runtime_metadata(runtime),
         }
 
         paths.metadata.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-        self.print_summary(float(mean_reward), float(std_reward), selected_stats, synthetic_queries)
+        self.print_summary(
+            float(mean_reward),
+            float(std_reward),
+            selected_stats,
+            synthetic_queries,
+            stochastic_mean_reward=stochastic_mean_reward,
+            stochastic_std_reward=stochastic_std_reward,
+        )
 
         train_env.close()
         final_eval_env.close()
+        for extra_eval_env in self.extra_eval_envs:
+            extra_eval_env.close()
+        self.extra_eval_envs.clear()
         return RunResult(
             run_dir=run_dir,
             metadata_path=paths.metadata,
@@ -1090,8 +1234,21 @@ class ExperimentRunner:
             "reward_composition": runtime.composition,
         }
 
-    def print_summary(self, mean_reward: float, std_reward: float, selected_stats: dict, synthetic_queries: int) -> None:
+    def print_summary(
+        self,
+        mean_reward: float,
+        std_reward: float,
+        selected_stats: dict,
+        synthetic_queries: int,
+        stochastic_mean_reward: float | None = None,
+        stochastic_std_reward: float | None = None,
+    ) -> None:
         print(f"{self.config.final_policy.title()} deterministic true reward: {mean_reward:.3f} +/- {std_reward:.3f}")
+        if stochastic_mean_reward is not None and stochastic_std_reward is not None:
+            print(
+                f"{self.config.final_policy.title()} stochastic true reward (primary): "
+                f"{stochastic_mean_reward:.3f} +/- {stochastic_std_reward:.3f}"
+            )
         values = ", ".join(
             f"{key}={selected_stats.get(f'mean_{key}', 0.0):.3f}" for key in self.suite.summary_component_keys
         )

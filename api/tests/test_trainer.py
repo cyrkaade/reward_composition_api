@@ -4,11 +4,15 @@ budgets, asserting the run directory artifacts and metadata keys."""
 from __future__ import annotations
 
 import json
+import random
 
+import numpy as np
 import pytest
+import torch as th
 
 from rcomp.config import ExperimentConfig
-from rcomp.trainer import run_experiment
+from rcomp.evaluation import isolated_evaluation_rng
+from rcomp.trainer import ExperimentRunner, run_experiment
 
 EXPECTED_METADATA_KEYS = {
     "env_id",
@@ -34,6 +38,12 @@ EXPECTED_METADATA_KEYS = {
     "selected_policy_true_reward_mean",
     "selected_policy_true_reward_std",
     "selected_policy_components",
+    "evaluation_policies",
+    "primary_evaluation_policy",
+    "best_logged_deterministic_true_reward",
+    "best_logged_stochastic_true_reward",
+    "selected_policy_stochastic_true_reward_mean",
+    "selected_policy_primary_true_reward_mean",
 }
 
 
@@ -88,6 +98,9 @@ def test_smoke_all_modes(mode, tmp_path):
     assert metadata["actual_timesteps"] >= 300
     assert isinstance(metadata["selected_policy_true_reward_mean"], float)
     assert "mean_total" in metadata["selected_policy_components"]
+    assert metadata["evaluation_policies"] == ["deterministic"]
+    assert metadata["primary_evaluation_policy"] == "deterministic"
+    assert metadata["selected_policy_stochastic_true_reward_mean"] is None
 
     if mode in ("feedback", "naive", "delta"):
         assert metadata["synthetic_queries"] > 0
@@ -126,6 +139,46 @@ def test_run_name_and_default_naming(tmp_path):
 
     assert result.run_dir.name == "cartpole_true_300_seed1"
     assert result.metadata["run_name"] == "cartpole_true_300_seed1"
+
+
+def test_dual_policy_evaluation_artifacts(tmp_path, monkeypatch):
+    runner = ExperimentRunner(smoke_config("true", tmp_path))
+    monkeypatch.setattr(runner.suite, "record_stochastic_evaluation", True)
+
+    result = runner.run()
+
+    assert (result.run_dir / "eval" / "evaluations.npz").exists()
+    assert (result.run_dir / "eval_stochastic" / "evaluations.npz").exists()
+    assert (result.run_dir / "eval_stochastic" / "component_evaluations.csv").exists()
+    assert (result.run_dir / "stochastic_true_reward_curve.png").exists()
+    assert result.metadata["evaluation_policies"] == ["stochastic", "deterministic"]
+    assert result.metadata["primary_evaluation_policy"] == "stochastic"
+    assert isinstance(result.metadata["selected_policy_stochastic_true_reward_mean"], float)
+    assert (
+        result.metadata["selected_policy_primary_true_reward_mean"]
+        == result.metadata["selected_policy_stochastic_true_reward_mean"]
+    )
+
+
+def test_isolated_evaluation_rng_is_reproducible_and_restores_state():
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = th.random.get_rng_state()
+
+    with isolated_evaluation_rng(1234):
+        first = (random.random(), np.random.random(), th.rand(1))
+    with isolated_evaluation_rng(1234):
+        second = (random.random(), np.random.random(), th.rand(1))
+
+    assert first[0] == second[0]
+    assert first[1] == second[1]
+    assert th.equal(first[2], second[2])
+    assert random.getstate() == python_state
+    restored_numpy_state = np.random.get_state()
+    assert restored_numpy_state[0] == numpy_state[0]
+    assert np.array_equal(restored_numpy_state[1], numpy_state[1])
+    assert restored_numpy_state[2:] == numpy_state[2:]
+    assert th.equal(th.random.get_rng_state(), torch_state)
 
 
 def test_ensemble_delta_mode(tmp_path):

@@ -20,6 +20,7 @@ CELLS = (
     "ll", "reacher", "pusher", "swimmer", "hopper", "bipedal",
     "walker", "ant", "mspacman", "qbert", "pong",
 )
+ATARI_CELLS = {"mspacman", "qbert", "pong"}
 
 
 def med(values) -> float:
@@ -42,8 +43,8 @@ def read_expected(path: Path) -> dict[tuple[str, str, int], str]:
     return expected
 
 
-def component_pcc(run_dir: Path) -> float:
-    path = run_dir / "eval" / "component_evaluations.csv"
+def component_pcc(run_dir: Path, stochastic: bool = False) -> float:
+    path = run_dir / ("eval_stochastic" if stochastic else "eval") / "component_evaluations.csv"
     if not path.exists():
         return float("nan")
     with path.open(newline="", encoding="utf-8") as handle:
@@ -60,21 +61,28 @@ def component_pcc(run_dir: Path) -> float:
     return float(np.corrcoef(true_values, partial_values)[0, 1])
 
 
+def load_curve(path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    if not path.exists():
+        return None
+    data = np.load(path)
+    results = np.asarray(data["results"], dtype=np.float64)
+    if results.size == 0:
+        return None
+    return np.asarray(data["timesteps"], dtype=np.int64), results.mean(axis=1)
+
+
 def load(root: Path) -> list[dict]:
     runs = []
     for meta_path in sorted(root.glob("ntscreen_*/*/metadata.json")):
         run_dir = meta_path.parent
         _, cell, variant = run_dir.parent.name.split("_", 2)
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        curve_path = run_dir / "eval" / "evaluations.npz"
-        if not curve_path.exists():
+        deterministic_curve = load_curve(run_dir / "eval" / "evaluations.npz")
+        stochastic_curve = load_curve(run_dir / "eval_stochastic" / "evaluations.npz")
+        if deterministic_curve is None or (cell in ATARI_CELLS and stochastic_curve is None):
             continue
-        data = np.load(curve_path)
-        results = np.asarray(data["results"], dtype=np.float64)
-        timesteps = np.asarray(data["timesteps"], dtype=np.int64)
-        if results.size == 0:
-            continue
-        means = results.mean(axis=1)
+        det_timesteps, det_means = deterministic_curve
+        timesteps, means = stochastic_curve if cell in ATARI_CELLS else deterministic_curve
         peak_index = int(np.argmax(means))
         runs.append({
             "cell": cell,
@@ -87,10 +95,16 @@ def load(root: Path) -> list[dict]:
             "peak": float(means[peak_index]),
             "peak_at": int(timesteps[peak_index]),
             "start": float(means[0]),
-            "pcc": component_pcc(run_dir),
+            "pcc": component_pcc(run_dir, stochastic=cell in ATARI_CELLS),
             "run_dir": str(run_dir),
             "timesteps": timesteps,
             "means": means,
+            "det_final": float(det_means[-1]),
+            "det_peak": float(det_means.max()),
+            "det_peak_at": int(det_timesteps[int(np.argmax(det_means))]),
+            "det_start": float(det_means[0]),
+            "det_timesteps": det_timesteps,
+            "det_means": det_means,
         })
     return runs
 
@@ -124,7 +138,8 @@ def validate_complete(runs: list[dict], expected: dict[tuple[str, str, int], str
 def write_csv(runs: list[dict], path: Path) -> None:
     fields = (
         "cell", "env_id", "variant", "mode", "partial_reference", "seed",
-        "final", "peak", "peak_at", "start", "pcc", "run_dir",
+        "final", "peak", "peak_at", "start", "det_final", "det_peak",
+        "det_peak_at", "det_start", "pcc", "run_dir",
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -163,7 +178,12 @@ def report(runs: list[dict], expected: dict[tuple[str, str, int], str]) -> None:
             print(f"{variant:30s} {final:11.1f} {peak:11.1f} {fraction:11.2f} {pcc:8.2f}  {reference}")
 
 
-def plot(runs: list[dict], expected: dict[tuple[str, str, int], str], output: Path) -> None:
+def plot(
+    runs: list[dict],
+    expected: dict[tuple[str, str, int], str],
+    output: Path,
+    deterministic: bool = False,
+) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -180,24 +200,27 @@ def plot(runs: list[dict], expected: dict[tuple[str, str, int], str], output: Pa
                 variants.append(variant)
         for variant in variants:
             rows = grouped[(cell, variant)]
-            length = min(len(run["means"]) for run in rows)
-            stack = np.vstack([run["means"][:length] for run in rows])
+            means_key = "det_means" if deterministic else "means"
+            timesteps_key = "det_timesteps" if deterministic else "timesteps"
+            length = min(len(run[means_key]) for run in rows)
+            stack = np.vstack([run[means_key][:length] for run in rows])
             center = np.median(stack, axis=0)
             low, high = np.percentile(stack, [25, 75], axis=0)
             color = "black" if variant == "true" else None
             line = ax.plot(
-                rows[0]["timesteps"][:length], center, label=variant,
+                rows[0][timesteps_key][:length], center, label=variant,
                 color=color, linewidth=2.2 if variant == "true" else 1.5,
                 linestyle="-" if variant == "true" else "--",
             )[0]
-            ax.fill_between(rows[0]["timesteps"][:length], low, high, color=line.get_color(), alpha=0.10)
+            ax.fill_between(rows[0][timesteps_key][:length], low, high, color=line.get_color(), alpha=0.10)
         ax.set_title(cell)
         ax.set_xlabel("timesteps")
         ax.set_ylabel("true reward")
         ax.grid(alpha=0.25)
         ax.legend(fontsize=6, ncol=2, frameon=False)
     axes[-1][-1].axis("off")
-    fig.suptitle("Partial calibration: true reward (black) vs five hand-written partials")
+    policy_label = "deterministic diagnostic" if deterministic else "stochastic primary for Atari"
+    fig.suptitle(f"Partial calibration ({policy_label}): true reward vs five hand-written partials")
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=160, bbox_inches="tight")
@@ -211,6 +234,7 @@ def main() -> None:
     parser.add_argument("--params", default="jobs/params_ntscreen.txt")
     parser.add_argument("--csv", default="logs/ntscreen_summary.csv")
     parser.add_argument("--figure", default="logs/ntscreen_curves.png")
+    parser.add_argument("--deterministic-figure", default="logs/ntscreen_curves_deterministic.png")
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
@@ -221,6 +245,7 @@ def main() -> None:
     report(runs, expected)
     if not args.no_plot:
         plot(runs, expected, Path(args.figure))
+        plot(runs, expected, Path(args.deterministic_figure), deterministic=True)
     print("\nNo candidate was auto-selected; review the curves and summary before the confirmatory grid.")
 
 

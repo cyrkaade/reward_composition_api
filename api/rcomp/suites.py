@@ -161,6 +161,7 @@ class Suite:
     summary_component_keys: tuple[str, ...] = ("total", "partial", "residual")
     wrapper_reset_info: dict[str, float] = {}
     cast_true_reward_info = True
+    record_stochastic_evaluation = False
 
     def supported_envs(self) -> tuple[str, ...]:
         _try_register_atari_envs()
@@ -379,6 +380,10 @@ class AtariSuite(Suite):
     collection_label = "Atari steps"
     summary_component_keys = ("total", "partial", "residual", "lost_lives")
     wrapper_reset_info = {"model_reward": 0.0, "learned_reward": 0.0}
+    # PPO learns a categorical action distribution.  Record its sampled return
+    # as the primary Atari endpoint while retaining argmax-action evaluation as
+    # a useful diagnostic; continuous-control suites keep their old behavior.
+    record_stochastic_evaluation = True
 
     def supported_envs(self) -> tuple[str, ...]:
         envs = set(self.default_envs())

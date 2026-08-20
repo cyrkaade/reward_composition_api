@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover
     wilcoxon = None
 
 CELLS = ("ll", "reacher", "pusher", "swimmer", "hopper", "bipedal", "walker", "ant", "mspacman", "qbert", "pong")
+ATARI_CELLS = {"mspacman", "qbert", "pong"}
 BUDGETS = (100, 200, 400)
 METHODS = ("vanilla", "naive", "ws25", "ws50", "ws75")
 
@@ -58,21 +59,28 @@ def holm(pvalues: dict[str, float]) -> dict[str, float]:
     return {key: adjusted.get(key, float("nan")) for key in pvalues}
 
 
+def load_curve(path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    if not path.exists():
+        return None
+    data = np.load(path)
+    results = np.asarray(data["results"], dtype=np.float64)
+    if results.size == 0:
+        return None
+    return np.asarray(data["timesteps"], dtype=np.int64), results.mean(axis=1)
+
+
 def load(root: Path) -> list[dict]:
     runs = []
     for meta_path in sorted(root.glob("ntcomp_*/*/metadata.json")):
         run_dir = meta_path.parent
         _, cell, variant = run_dir.parent.name.split("_", 2)
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        curve_path = run_dir / "eval" / "evaluations.npz"
-        if not curve_path.exists():
+        deterministic_curve = load_curve(run_dir / "eval" / "evaluations.npz")
+        stochastic_curve = load_curve(run_dir / "eval_stochastic" / "evaluations.npz")
+        if deterministic_curve is None or (cell in ATARI_CELLS and stochastic_curve is None):
             continue
-        data = np.load(curve_path)
-        results = np.asarray(data["results"], dtype=np.float64)
-        timesteps = np.asarray(data["timesteps"], dtype=np.int64)
-        if results.size == 0:
-            continue
-        means = results.mean(axis=1)
+        det_timesteps, det_means = deterministic_curve
+        timesteps, means = stochastic_curve if cell in ATARI_CELLS else deterministic_curve
         peak_index = int(np.argmax(means))
         if "_q" in variant:
             method, budget_text = variant.rsplit("_q", 1)
@@ -99,6 +107,12 @@ def load(root: Path) -> list[dict]:
             "start": float(means[0]),
             "timesteps": timesteps,
             "means": means,
+            "det_final": float(det_means[-1]),
+            "det_peak": float(det_means.max()),
+            "det_peak_at": int(det_timesteps[int(np.argmax(det_means))]),
+            "det_start": float(det_means[0]),
+            "det_timesteps": det_timesteps,
+            "det_means": det_means,
         })
     return runs
 
@@ -124,7 +138,7 @@ def write_csv(runs: list[dict], path: Path) -> None:
     fields = (
         "cell", "env_id", "variant", "method", "budget", "seed", "mode", "partial_reference",
         "partial_alpha", "normalize_partial", "normalize_model", "query_budget", "synthetic_queries",
-        "final", "peak", "peak_at", "start",
+        "final", "peak", "peak_at", "start", "det_final", "det_peak", "det_peak_at", "det_start",
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -196,7 +210,7 @@ def report(runs: list[dict]) -> None:
               f"positive cells {sum(value > 0 for value in normalized_effects)}/11, exact p={global_p:.4f}")
 
 
-def plot(runs: list[dict], output: Path) -> None:
+def plot(runs: list[dict], output: Path, deterministic: bool = False) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -213,17 +227,20 @@ def plot(runs: list[dict], output: Path) -> None:
             variants = ("true", "partial") + tuple(f"{method}_q{budget}" for method in METHODS)
             for variant in variants:
                 rows = grouped[(cell, variant)]
-                length = min(len(run["means"]) for run in rows)
-                stack = np.vstack([run["means"][:length] for run in rows])
+                means_key = "det_means" if deterministic else "means"
+                timesteps_key = "det_timesteps" if deterministic else "timesteps"
+                length = min(len(run[means_key]) for run in rows)
+                stack = np.vstack([run[means_key][:length] for run in rows])
                 method = variant.split("_q", 1)[0]
-                ax.plot(rows[0]["timesteps"][:length], np.median(stack, axis=0),
+                ax.plot(rows[0][timesteps_key][:length], np.median(stack, axis=0),
                         color=colors[method], label=method,
                         linestyle="--" if method.startswith("ws") else (":" if method == "partial" else "-"))
             ax.set_title(f"{cell} / q{budget}")
             ax.grid(alpha=0.25)
             if row == 0 and col == 0:
                 ax.legend(fontsize=7, frameon=False, ncol=2)
-    fig.suptitle("Non-timid confirmatory composition grid")
+    policy_label = "deterministic diagnostic" if deterministic else "stochastic primary for Atari"
+    fig.suptitle(f"Non-timid confirmatory composition grid ({policy_label})")
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150, bbox_inches="tight")
@@ -237,6 +254,7 @@ def main() -> None:
     parser.add_argument("--params", default="jobs/params_ntcomp.txt")
     parser.add_argument("--csv", default="logs/ntcomp_summary.csv")
     parser.add_argument("--figure", default="logs/ntcomp_curves.png")
+    parser.add_argument("--deterministic-figure", default="logs/ntcomp_curves_deterministic.png")
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
     runs = load(Path(args.root))
@@ -245,6 +263,7 @@ def main() -> None:
     report(runs)
     if not args.no_plot:
         plot(runs, Path(args.figure))
+        plot(runs, Path(args.deterministic_figure), deterministic=True)
 
 
 if __name__ == "__main__":
