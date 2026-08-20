@@ -654,13 +654,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         "benchmark": "the zoo budgets 1e7 steps per game",
         "reference": {"n_envs": 8, "n_timesteps": 10_000_000, "normalize": False},
         "note": (
-            "Identical to the existing AtariSuite defaults except that lr and "
-            "clip_range are linearly annealed here. `policy` is deliberately "
-            "absent: the zoo block assumes image observations + CnnPolicy, while "
-            "AtariSuite.make_raw_env uses obs_type='ram' and MlpPolicy, so the "
-            "suite's own choice must stand. The zoo also applies AtariWrapper + "
-            "frame_stack 4, which this codebase does not. Atari runs here have "
-            "historically not learned - see CLAUDE.md."
+            "Identical to the AtariSuite defaults except that lr and clip_range "
+            "are linearly annealed here. `policy` is deliberately absent so the "
+            "suite remains authoritative. AtariSuite now supplies 4x84x84 "
+            "grayscale pixels and CnnPolicy; synchronized RAM is private to the "
+            "hand-written partial reward."
         ),
         "ppo": {
             "n_steps": 128,

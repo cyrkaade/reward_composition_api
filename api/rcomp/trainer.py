@@ -1,4 +1,4 @@
-"""The single experiment runner for all suites and all five reward modes,
+"""The single experiment runner for all suites and all reward modes,
 including the RLHF round loop for the preference modes."""
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import torch as th
 from gymnasium.spaces.utils import flatdim
 from stable_baselines3 import PPO
@@ -29,7 +30,7 @@ from .evaluation import (
     write_component_summary_csv,
 )
 from .partials import include_partial_feature, resolve_custom_partial
-from .rewards.model import RewardModel
+from .rewards.model import PixelRewardModel, RewardModel
 from .rewards.preferences import (
     build_holdout_preferences,
     choose_query_pairs,
@@ -166,7 +167,7 @@ class RlhfTrainer:
             config.rlhf_rounds,
             config.policy_timesteps_per_round,
         )
-        self.add_partial_to_predictions = config.mode in {"naive", "delta"}
+        self.add_partial_to_predictions = config.mode in {"naive", "weighted_sum", "delta"}
 
     def run(self) -> int:
         self.train_initial_policy()
@@ -442,6 +443,7 @@ class RlhfTrainer:
             active_query_strategy=config.active_query_strategy,
             candidate_protocol=config.active_candidate_protocol,
             pool_multiplier=config.active_pool_multiplier,
+            model_prediction_scale=self.runtime.model_prediction_scale(),
             transform_partial=self.runtime.composed_partial_reward,
             rng=query_rng,
         )
@@ -668,10 +670,25 @@ def default_run_name(config: ExperimentConfig, suite: Suite) -> str:
     return f"{suite.slug(config.env_id)}_{variant}_{steps}_seed{config.seed}"
 
 
-def make_reward_models(input_size: int, config: ExperimentConfig) -> RewardModel | list[RewardModel]:
+def make_reward_models(
+    input_size: int,
+    config: ExperimentConfig,
+    observation_space=None,
+    action_space=None,
+) -> RewardModel | PixelRewardModel | list[RewardModel | PixelRewardModel]:
+    model_class = RewardModel
+    model_specific_kwargs = {"input_size": input_size}
+    if config.suite == "atari":
+        if observation_space is None or action_space is None or len(observation_space.shape or ()) != 3:
+            raise ValueError("Atari pixel reward models require a three-dimensional observation space and an action space")
+        model_class = PixelRewardModel
+        model_specific_kwargs = {
+            "observation_shape": tuple(observation_space.shape),
+            "extra_feature_size": flatdim(action_space) + 1,
+        }
     models = [
-        RewardModel(
-            input_size=input_size,
+        model_class(
+            **model_specific_kwargs,
             hidden_sizes=config.reward_hidden_sizes,
             learn_alpha=config.learn_partial_alpha,
             alpha_init=config.partial_alpha,
@@ -832,7 +849,7 @@ class ExperimentRunner:
         model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **hyperparams)
 
         input_size = flatdim(observation_space) + flatdim(action_space) + 1
-        reward_model = make_reward_models(input_size, config)
+        reward_model = make_reward_models(input_size, config, observation_space, action_space)
         convert_traj = self.trajectory_converter(runtime)
         total_queries = RlhfTrainer(
             config,
@@ -852,10 +869,10 @@ class ExperimentRunner:
 
     def trajectory_converter(self, runtime: LearnedRewardRuntime):
         def convert(trajectory: Trajectory):
-            return [
-                runtime.model_features(state["obs"], state["act"], state["partial_rew"]).tolist()
-                for state in trajectory.states
-            ]
+            return np.stack(
+                [runtime.model_features(state["obs"], state["act"], state["partial_rew"]) for state in trajectory.states],
+                axis=0,
+            )
 
         return convert
 

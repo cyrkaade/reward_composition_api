@@ -24,6 +24,33 @@ from .model import (
 )
 
 
+PIXEL_SAFE_BATCH_SIZE = 16
+
+
+def trajectories_to_tensor(trajectories, convert_traj):
+    """Stack converted trajectories without constructing nested Python floats."""
+
+    converted = [np.asarray(convert_traj(trajectory), dtype=np.float32) for trajectory in trajectories]
+    return th.from_numpy(np.stack(converted, axis=0))
+
+
+def model_fragment_returns(models, fragments, convert_traj, batch_size: int = PIXEL_SAFE_BATCH_SIZE):
+    """Predict fragment returns in bounded-memory batches.
+
+    This is numerically equivalent to one giant forward pass for the default
+    models, but makes stacked-pixel active querying practical.
+    """
+
+    returns = [[] for _ in models]
+    with th.no_grad():
+        for start in range(0, len(fragments), batch_size):
+            tensor = trajectories_to_tensor(fragments[start : start + batch_size], convert_traj)
+            for index, model in enumerate(models):
+                values = th.sum(model(tensor), dim=[1, 2]).detach().cpu().numpy().tolist()
+                returns[index].extend(values)
+    return returns
+
+
 def rate_pairs_from_true_reward(pairs: list[tuple[Trajectory, Trajectory]]) -> list[Preference]:
     rated_pairs = []
     for t1, t2 in pairs:
@@ -133,21 +160,21 @@ def dropout_active_learning_pairs(
     rng: random.Random | None = None,
     candidate_protocol: str = "matching",
     pool_multiplier: int = 10,
+    model_prediction_scale: float = 1.0,
 ) -> list[tuple[Trajectory, Trajectory]]:
     if len(fragments) < 2:
         return []
 
     mc_dropout_models = [deepcopy(reward_model).dropout(dropout_p) for _ in range(k)]
-    fragment_tensor = th.as_tensor([convert_traj(fragment) for fragment in fragments], dtype=th.float32)
     partial_returns = _partial_fragment_returns(fragments, transform_partial)
-
-    pred_returns = []
-    with th.no_grad():
-        for model in mc_dropout_models:
-            returns = th.sum(model(fragment_tensor), dim=[1, 2]).detach().cpu().numpy().tolist()
-            if add_partial_to_predictions:
-                returns = [model_return + partial for model_return, partial in zip(returns, partial_returns)]
-            pred_returns.append(returns)
+    pred_returns = model_fragment_returns(mc_dropout_models, fragments, convert_traj)
+    if model_prediction_scale != 1.0:
+        pred_returns = [[model_prediction_scale * value for value in returns] for returns in pred_returns]
+    if add_partial_to_predictions:
+        pred_returns = [
+            [model_return + partial for model_return, partial in zip(returns, partial_returns)]
+            for returns in pred_returns
+        ]
 
     return _select_pairs(fragments, pred_returns, query_count, n_batches, rng, candidate_protocol, pool_multiplier)
 
@@ -169,20 +196,20 @@ def ensemble_active_learning_pairs(
     rng: random.Random | None = None,
     candidate_protocol: str = "matching",
     pool_multiplier: int = 10,
+    model_prediction_scale: float = 1.0,
 ) -> list[tuple[Trajectory, Trajectory]]:
     if len(fragments) < 2 or not reward_models:
         return []
 
-    fragment_tensor = th.as_tensor([convert_traj(fragment) for fragment in fragments], dtype=th.float32)
     partial_returns = _partial_fragment_returns(fragments, transform_partial)
-
-    pred_returns = []
-    with th.no_grad():
-        for model in reward_models:
-            returns = th.sum(model(fragment_tensor), dim=[1, 2]).detach().cpu().numpy().tolist()
-            if add_partial_to_predictions:
-                returns = [model_return + partial for model_return, partial in zip(returns, partial_returns)]
-            pred_returns.append(returns)
+    pred_returns = model_fragment_returns(reward_models, fragments, convert_traj)
+    if model_prediction_scale != 1.0:
+        pred_returns = [[model_prediction_scale * value for value in returns] for returns in pred_returns]
+    if add_partial_to_predictions:
+        pred_returns = [
+            [model_return + partial for model_return, partial in zip(returns, partial_returns)]
+            for returns in pred_returns
+        ]
 
     return _select_pairs(fragments, pred_returns, query_count, n_batches, rng, candidate_protocol, pool_multiplier)
 
@@ -304,6 +331,7 @@ def choose_query_pairs(
     rng: random.Random | None = None,
     candidate_protocol: str = "matching",
     pool_multiplier: int = 10,
+    model_prediction_scale: float = 1.0,
 ) -> list[tuple[Trajectory, Trajectory]]:
     fragments = fragment_trajectories(trajectories, fragment_length)
     if len(fragments) < 2 or query_count <= 0:
@@ -326,6 +354,7 @@ def choose_query_pairs(
             rng,
             candidate_protocol,
             pool_multiplier,
+            model_prediction_scale,
         )
 
     return dropout_active_learning_pairs(
@@ -341,6 +370,7 @@ def choose_query_pairs(
         rng,
         candidate_protocol,
         pool_multiplier,
+        model_prediction_scale,
     )
 
 
@@ -400,15 +430,12 @@ def build_holdout_preferences(
 
 
 def rated_pairs_to_tensors(rated_pairs: list[Preference], convert_traj: Callable[[Trajectory], list[list[float]]]):
-    t1s, t2s, ratings = [], [], []
-    for pair in rated_pairs:
-        t1s.append(convert_traj(pair.t1))
-        t2s.append(convert_traj(pair.t2))
-        ratings.append(pair.rating)
+    t1s = trajectories_to_tensor([pair.t1 for pair in rated_pairs], convert_traj)
+    t2s = trajectories_to_tensor([pair.t2 for pair in rated_pairs], convert_traj)
     return (
-        th.as_tensor(t1s, dtype=th.float32),
-        th.as_tensor(t2s, dtype=th.float32),
-        th.as_tensor(ratings, dtype=th.float32),
+        t1s,
+        t2s,
+        th.as_tensor([pair.rating for pair in rated_pairs], dtype=th.float32),
     )
 
 
@@ -429,10 +456,14 @@ def reward_model_io_stats(
     if not trajectories:
         return None, None
     reward_models = reward_model if isinstance(reward_model, list) else [reward_model]
+    outputs = []
     with th.no_grad():
-        trajectory_tensors = th.as_tensor([convert_traj(trajectory) for trajectory in trajectories], dtype=th.float32)
-        outputs = th.stack([model(trajectory_tensors).reshape(-1) for model in reward_models]).mean(dim=0)
-    return float(outputs.mean().item()), float(outputs.std(unbiased=False).item())
+        for start in range(0, len(trajectories), PIXEL_SAFE_BATCH_SIZE):
+            tensors = trajectories_to_tensor(trajectories[start : start + PIXEL_SAFE_BATCH_SIZE], convert_traj)
+            batch = th.stack([model(tensors).reshape(-1) for model in reward_models]).mean(dim=0)
+            outputs.append(batch.cpu())
+    values = th.cat(outputs)
+    return float(values.mean().item()), float(values.std(unbiased=False).item())
 
 
 def gate_statistics(reward_model, trajectories, convert_traj):
@@ -866,22 +897,25 @@ def _preference_training_accuracy(
     """
     if not train_pairs:
         return 0.0
+    correctness_batches = []
     with th.no_grad():
-        x1, x2, ratings = rated_pairs_to_tensors(train_pairs, convert_traj)
-        score1, score2 = reward_model(x1), reward_model(x2)
-        if use_delta_loss:
-            partial1 = partial_reward_tensor(train_pairs, "t1", partial_mean, partial_std)
-            partial2 = partial_reward_tensor(train_pairs, "t2", partial_mean, partial_std)
-            if reward_model.gate_head is not None:
-                score1 = score1 + reward_model.gate(x1) * partial1 * partial_alpha
-                score2 = score2 + reward_model.gate(x2) * partial2 * partial_alpha
-            else:
-                alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
-                score1 = score1 + alpha * partial1
-                score2 = score2 + alpha * partial2
-        chose_first = score1.sum(dim=[1, 2]) > score2.sum(dim=[1, 2])
-        correctness = th.where(chose_first, ratings, 1.0 - ratings)
-        return float(correctness.mean().item())
+        for start in range(0, len(train_pairs), PIXEL_SAFE_BATCH_SIZE):
+            batch_pairs = train_pairs[start : start + PIXEL_SAFE_BATCH_SIZE]
+            x1, x2, ratings = rated_pairs_to_tensors(batch_pairs, convert_traj)
+            score1, score2 = reward_model(x1), reward_model(x2)
+            if use_delta_loss:
+                partial1 = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
+                partial2 = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+                if reward_model.gate_head is not None:
+                    score1 = score1 + reward_model.gate(x1) * partial1 * partial_alpha
+                    score2 = score2 + reward_model.gate(x2) * partial2 * partial_alpha
+                else:
+                    alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
+                    score1 = score1 + alpha * partial1
+                    score2 = score2 + alpha * partial2
+            chose_first = score1.sum(dim=[1, 2]) > score2.sum(dim=[1, 2])
+            correctness_batches.append(th.where(chose_first, ratings, 1.0 - ratings).cpu())
+    return float(th.cat(correctness_batches).mean().item())
 
 
 def train_preference_reward_model(
@@ -939,18 +973,15 @@ def train_preference_reward_model(
         # no-ops for the default model, which has no train/eval-sensitive layers.
         reward_model.train()
         random.shuffle(train_pairs)
-        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(train_pairs, convert_traj)
         running_loss = 0.0
         batches = 0
 
         for batch_start in range(0, len(train_pairs), batch_size):
             batch_end = min(batch_start + batch_size, len(train_pairs))
             batch_pairs = train_pairs[batch_start:batch_end]
-            x1 = t1_tensor[batch_start:batch_end]
-            x2 = t2_tensor[batch_start:batch_end]
+            x1, x2, rating_batch = rated_pairs_to_tensors(batch_pairs, convert_traj)
             y1 = reward_model(x1)
             y2 = reward_model(x2)
-            rating_batch = ratings[batch_start:batch_end]
 
             if use_delta_loss and reward_model.gate_head is not None:
                 # per-state gate: R_hat = h(s,a) + g(s,a) * alpha * partial(s,a), g in [0,1]
@@ -1325,19 +1356,25 @@ def validate_preference_reward_model(
 ) -> float:
     if not val_pairs:
         return 0.0
+    losses = []
     with th.no_grad():
-        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(val_pairs, convert_traj)
-        y1 = reward_model(t1_tensor)
-        y2 = reward_model(t2_tensor)
-        if use_delta_loss and reward_model.gate_head is not None:
-            g1 = reward_model.gate(t1_tensor)
-            g2 = reward_model.gate(t2_tensor)
-            t1_partial = partial_reward_tensor(val_pairs, "t1", partial_mean, partial_std)
-            t2_partial = partial_reward_tensor(val_pairs, "t2", partial_mean, partial_std)
-            return float(PairwiseLoss()(y1 + g1 * t1_partial, y2 + g2 * t2_partial, ratings).mean().item())
-        if use_delta_loss:
-            alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
-            t1_partial = partial_reward_tensor(val_pairs, "t1", partial_mean, partial_std)
-            t2_partial = partial_reward_tensor(val_pairs, "t2", partial_mean, partial_std)
-            return float(preference_loss(y1, y2, t1_partial, t2_partial, ratings, alpha).mean().item())
-        return float(preference_loss(y1, y2, ratings).mean().item())
+        for start in range(0, len(val_pairs), PIXEL_SAFE_BATCH_SIZE):
+            batch_pairs = val_pairs[start : start + PIXEL_SAFE_BATCH_SIZE]
+            t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(batch_pairs, convert_traj)
+            y1 = reward_model(t1_tensor)
+            y2 = reward_model(t2_tensor)
+            if use_delta_loss and reward_model.gate_head is not None:
+                g1 = reward_model.gate(t1_tensor)
+                g2 = reward_model.gate(t2_tensor)
+                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
+                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+                batch_loss = PairwiseLoss()(y1 + g1 * t1_partial, y2 + g2 * t2_partial, ratings)
+            elif use_delta_loss:
+                alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
+                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
+                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+                batch_loss = preference_loss(y1, y2, t1_partial, t2_partial, ratings, alpha)
+            else:
+                batch_loss = preference_loss(y1, y2, ratings)
+            losses.append(batch_loss.reshape(-1).cpu())
+    return float(th.cat(losses).mean().item())

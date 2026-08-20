@@ -1,9 +1,9 @@
-"""Five hand-written priors for ALE/Qbert-v5, for the sel3 screen.
+"""Archived hand-written priors for the old ALE/Qbert-v5 sel3 screen.
 
-Same construction as sel_mspacman.py -- see that file for why these are built
-from `true_reward` / `info["lives"]` / `info["episode_frame_number"]` rather
-than from the observation (the Atari suite uses obs_type="ram", 128 undocumented
-bytes, and a per-game memory map is the kind of thing that breaks silently).
+Same historical construction as sel_mspacman.py. These are retained only for
+sel3 reproducibility and are excluded from the new screen, whose candidates in
+``atari_ram_screen.py`` read synchronized RAM while PPO and the learned reward
+model read pixels.
 
 The parameters differ from MsPacman's because the games do:
 

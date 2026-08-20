@@ -80,6 +80,57 @@ class AtariFireResetEnv(gym.Wrapper):
         return observation, reward, terminated, truncated, info
 
 
+class AtariResizeObservation(gym.ObservationWrapper):
+    """Resize an ALE grayscale frame without requiring OpenCV.
+
+    Gymnasium's :class:`AtariPreprocessing` has an undeclared runtime dependency
+    on OpenCV.  Pillow is already a project dependency and gives us the only
+    part needed here: deterministic 84x84 grayscale resizing.  Action repeat,
+    sticky actions, FIRE handling, and life handling remain unchanged.
+    """
+
+    def __init__(self, env, screen_size: int = 84):
+        super().__init__(env)
+        self.screen_size = int(screen_size)
+        self.observation_space = spaces.Box(
+            low=0,
+            high=255,
+            shape=(self.screen_size, self.screen_size),
+            dtype=np.uint8,
+        )
+
+    def observation(self, observation):
+        from PIL import Image
+
+        frame = Image.fromarray(np.asarray(observation, dtype=np.uint8), mode="L")
+        resized = frame.resize((self.screen_size, self.screen_size), resample=Image.Resampling.BILINEAR)
+        return np.asarray(resized, dtype=np.uint8)
+
+
+class AtariRamInfoEnv(gym.Wrapper):
+    """Attach synchronized ALE RAM for partial rewards without exposing it.
+
+    The environment observation remains the stacked pixel tensor consumed by
+    PPO and the learned reward model.  ``PreferenceRewardWrapper`` removes this
+    private info item after using it, so RAM never enters model features.
+    """
+
+    partial_observation_key = "_partial_observation"
+
+    def _ram(self) -> np.ndarray:
+        return np.asarray(self.env.unwrapped.ale.getRAM(), dtype=np.uint8).copy()
+
+    def reset(self, **kwargs):
+        observation, info = self.env.reset(**kwargs)
+        info[self.partial_observation_key] = self._ram()
+        return observation, info
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        info[self.partial_observation_key] = self._ram()
+        return observation, reward, terminated, truncated, info
+
+
 def slugify(env_id: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "_" for ch in env_id.rsplit("-", 1)[0]).strip("_")
 
@@ -336,7 +387,14 @@ class AtariSuite(Suite):
         return tuple(sorted(envs))
 
     def default_envs(self) -> tuple[str, ...]:
-        return ("ALE/Breakout-v5", "ALE/Seaquest-v5", "ALE/Qbert-v5", "ALE/SpaceInvaders-v5")
+        return (
+            "ALE/Breakout-v5",
+            "ALE/MsPacman-v5",
+            "ALE/Pong-v5",
+            "ALE/Qbert-v5",
+            "ALE/Seaquest-v5",
+            "ALE/SpaceInvaders-v5",
+        )
 
     def default_env_id(self) -> str:
         return "ALE/Breakout-v5"
@@ -356,17 +414,24 @@ class AtariSuite(Suite):
 
     def make_raw_env(self, env_id: str) -> gym.Env:
         register_atari_envs()
-        env = gym.make(env_id, obs_type="ram", frameskip=4, repeat_action_probability=0.25)
-        return AtariFireResetEnv(env)
+        # Policy and reward-model observations are pixels.  RAM is sampled from
+        # the exact same final ALE state by the outer wrapper and is used only by
+        # hand-written partials.
+        env = gym.make(env_id, obs_type="grayscale", frameskip=4, repeat_action_probability=0.25)
+        env = AtariResizeObservation(env, screen_size=84)
+        env = AtariFireResetEnv(env)
+        env = gym.wrappers.FrameStackObservation(env, stack_size=4, padding_type="reset")
+        return AtariRamInfoEnv(env)
 
     def should_normalize_observation(self, observation_space: spaces.Space) -> bool:
-        return True
+        # CnnPolicy and Atari observation_features both apply /255 themselves.
+        return False
 
     def default_ppo_hyperparams(self, config, probe_env: gym.Env) -> dict[str, Any]:
         from torch import nn
 
         return {
-            "policy": "MlpPolicy",
+            "policy": "CnnPolicy",
             "n_steps": 128,
             "batch_size": 256,
             "gamma": 0.99,
@@ -379,7 +444,7 @@ class AtariSuite(Suite):
             "vf_coef": 0.5,
             "policy_kwargs": {
                 "activation_fn": nn.ReLU,
-                "net_arch": {"pi": [256, 256], "vf": [256, 256]},
+                "net_arch": {"pi": [256], "vf": [256]},
             },
         }
 
@@ -387,9 +452,7 @@ class AtariSuite(Suite):
         return np.asarray(observation, dtype=np.float32).reshape(-1) / 255.0
 
     def eval_model_observation(self, stats_source, observation):
-        from .envs import normalize_obs
-
-        return normalize_obs(stats_source, observation)
+        return observation
 
     def slug(self, env_id: str) -> str:
         name = env_id.split("/", 1)[-1].rsplit("-", 1)[0]
@@ -401,7 +464,14 @@ class AtariSuite(Suite):
 
     def extra_metadata(self, config) -> dict[str, Any]:
         return {
-            "obs_type": "ram",
+            "policy_observation": "pixels",
+            "policy_architecture": "cnn",
+            "reward_model_observation": "pixels",
+            "reward_model_architecture": "cnn",
+            "partial_observation": "ram",
+            "obs_type": "grayscale",
+            "screen_size": 84,
+            "frame_stack": 4,
             "frameskip": 4,
             "repeat_action_probability": 0.25,
             "fire_reset": True,

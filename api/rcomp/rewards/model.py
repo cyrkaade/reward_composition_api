@@ -84,6 +84,110 @@ class RewardModel(th.nn.Module):
         return self
 
 
+class PixelRewardModel(th.nn.Module):
+    """Convolutional reward model for flattened stacked-pixel features.
+
+    The public input remains ``(..., feature_dim)`` so all preference, delta,
+    gate, and ensemble code is shared with :class:`RewardModel`.  Only the
+    observation prefix is reshaped and encoded by a Nature-style CNN; the
+    one-hot action and optional partial feature are concatenated afterwards.
+    """
+
+    def __init__(
+        self,
+        observation_shape: tuple[int, int, int],
+        extra_feature_size: int,
+        hidden_sizes=(200,),
+        learn_alpha=False,
+        alpha_init=1.0,
+        predict_partial=False,
+        batchnorm_output=False,
+        gate_partial=False,
+        gate_init=0.5,
+        tanh_output=False,
+        tanh_scale=1.0,
+    ):
+        super().__init__()
+        self.observation_shape = tuple(int(value) for value in observation_shape)
+        self.observation_size = math.prod(self.observation_shape)
+        self.extra_feature_size = int(extra_feature_size)
+
+        channels = self.observation_shape[0]
+        self.cnn = th.nn.Sequential(
+            th.nn.Conv2d(channels, 32, kernel_size=8, stride=4),
+            th.nn.ReLU(),
+            th.nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            th.nn.ReLU(),
+            th.nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            th.nn.ReLU(),
+            th.nn.Flatten(),
+        )
+        with th.no_grad():
+            cnn_size = int(self.cnn(th.zeros((1, *self.observation_shape))).shape[1])
+        self.visual_projection = th.nn.Sequential(th.nn.Linear(cnn_size, 256), th.nn.ReLU())
+
+        layers = []
+        last_size = 256 + self.extra_feature_size
+        for hidden_size in hidden_sizes:
+            layers.append(th.nn.Linear(last_size, hidden_size))
+            layers.append(th.nn.LeakyReLU())
+            last_size = hidden_size
+        self.trunk = th.nn.Sequential(*layers)
+        self.head = th.nn.Linear(last_size, 1)
+        self.partial_head = th.nn.Linear(last_size, 1) if predict_partial else None
+        self.gate_head = th.nn.Linear(last_size, 1) if gate_partial else None
+        if self.gate_head is not None:
+            clamped = min(max(float(gate_init), 1e-4), 1.0 - 1e-4)
+            bias = math.log(clamped / (1.0 - clamped))
+            th.nn.init.zeros_(self.gate_head.weight)
+            th.nn.init.constant_(self.gate_head.bias, bias)
+        self.output_bn = OutputBatchNorm() if batchnorm_output else None
+        self.tanh_output = bool(tanh_output)
+        self.tanh_scale = float(tanh_scale)
+        self.alpha = th.nn.Parameter(th.tensor(float(alpha_init))) if learn_alpha else None
+
+    def _latent(self, x: Tensor) -> tuple[Tensor, tuple[int, ...]]:
+        leading_shape = tuple(x.shape[:-1])
+        flat = x.reshape(-1, x.shape[-1])
+        if flat.shape[-1] != self.observation_size + self.extra_feature_size:
+            raise ValueError(
+                "pixel reward-model input has "
+                f"{flat.shape[-1]} features; expected {self.observation_size + self.extra_feature_size}"
+            )
+        pixels = flat[:, : self.observation_size].reshape(-1, *self.observation_shape)
+        extras = flat[:, self.observation_size :]
+        visual = self.visual_projection(self.cnn(pixels))
+        return self.trunk(th.cat((visual, extras), dim=1)), leading_shape
+
+    @staticmethod
+    def _restore(value: Tensor, leading_shape: tuple[int, ...]) -> Tensor:
+        return value.reshape(*leading_shape, 1)
+
+    def forward(self, x):
+        latent, leading_shape = self._latent(x)
+        out = self._restore(self.head(latent), leading_shape)
+        if self.tanh_output:
+            out = th.tanh(out / self.tanh_scale)
+        if self.output_bn is not None:
+            out = self.output_bn(out)
+        return out
+
+    def predict_partial(self, x):
+        latent, leading_shape = self._latent(x)
+        return self._restore(self.partial_head(latent), leading_shape)
+
+    def gate(self, x):
+        latent, leading_shape = self._latent(x)
+        return th.sigmoid(self._restore(self.gate_head(latent), leading_shape))
+
+    def dropout(self, prob):
+        dropout = th.nn.Dropout(prob)
+        for layer in self.modules():
+            if isinstance(layer, (th.nn.Linear, th.nn.Conv2d)):
+                layer.weight = th.nn.Parameter(dropout(layer.weight))
+        return self
+
+
 class DeltaLoss(th.nn.Module):
     def __init__(self):
         super().__init__()

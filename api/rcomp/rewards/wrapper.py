@@ -1,5 +1,5 @@
 """The single learned-reward runtime and env wrapper shared by all suites
-and all five reward compositions. Suite differences are injected through the
+and reward compositions. Suite differences are injected through the
 runtime: the observation-feature function, the info dict emitted at reset,
 and whether the true reward is cast to float in ``info``."""
 
@@ -16,6 +16,22 @@ from gymnasium import spaces
 from ..envs import action_features
 from ..partials import PartialSpec
 from .model import RewardModel
+
+
+PARTIAL_OBSERVATION_KEY = "_partial_observation"
+
+
+def partial_observation_from_info(observation, info: dict, *, consume: bool = False):
+    """Return the private observation intended for a hand-written partial.
+
+    Non-Atari environments do not set the key and therefore retain their
+    historical behavior.  Atari returns pixels as ``observation`` and puts a
+    synchronized RAM snapshot under the private key.
+    """
+
+    if consume:
+        return info.pop(PARTIAL_OBSERVATION_KEY, observation)
+    return info.get(PARTIAL_OBSERVATION_KEY, observation)
 
 
 def reward_model_features(
@@ -88,6 +104,21 @@ class LearnedRewardRuntime:
     def composed_partial_reward(self, value: float) -> float:
         return self.partial_alpha * self.transform_partial_reward(value)
 
+    def model_reward_weight(self) -> float:
+        """Coefficient applied to the learned reward in the composition."""
+        return 1.0 - self.partial_alpha if self.composition == "weighted_sum" else 1.0
+
+    def model_prediction_scale(self) -> float:
+        """Linear scale of raw model returns used by active query scoring.
+
+        All query fragments have equal length, so the affine normalizer's mean
+        shift cancels between a pair; only this scale changes preferences.
+        """
+        scale = self.reward_scale * self.model_reward_weight()
+        if self.normalize and self.output_std is not None:
+            scale *= self.target_std / max(self.output_std, 1e-8)
+        return scale
+
     def model_features(self, observation, action, partial_reward: float) -> np.ndarray:
         return reward_model_features(
             self.observation_features,
@@ -105,11 +136,11 @@ class PreferenceRewardWrapper(gym.Wrapper):
         super().__init__(env)
         self.runtime = runtime
         self.partial = runtime.custom_partial.create(runtime.env_id) if runtime.custom_partial else None
-        self._last_obs = None
+        self._last_partial_obs = None
 
     def reset(self, **kwargs):
         observation, info = self.env.reset(**kwargs)
-        self._last_obs = observation
+        self._last_partial_obs = partial_observation_from_info(observation, info, consume=True)
         if self.partial is not None:
             self.partial.reset(info)
         info.update(dict(self.runtime.reset_info))
@@ -152,15 +183,21 @@ class PreferenceRewardWrapper(gym.Wrapper):
             return model_reward
         if self.runtime.composition in {"naive", "delta"}:
             return self.runtime.composed_partial_reward(partial_reward) + model_reward
+        if self.runtime.composition == "weighted_sum":
+            return (
+                self.runtime.composed_partial_reward(partial_reward)
+                + self.runtime.model_reward_weight() * model_reward
+            )
         raise ValueError(f"Unsupported reward composition: {self.runtime.composition}")
 
     def step(self, action):
-        previous_obs = self._last_obs
+        previous_partial_obs = self._last_partial_obs
         observation, true_reward, terminated, truncated, info = self.env.step(action)
+        partial_observation = partial_observation_from_info(observation, info, consume=True)
         partial_reward, partial_components = self.partial_reward(
-            previous_obs,
+            previous_partial_obs,
             action,
-            observation,
+            partial_observation,
             true_reward,
             terminated,
             truncated,
@@ -182,5 +219,5 @@ class PreferenceRewardWrapper(gym.Wrapper):
         info["partial_components"] = partial_components
         info["model_reward"] = model_reward
         info["learned_reward"] = training_reward
-        self._last_obs = observation
+        self._last_partial_obs = partial_observation
         return observation, training_reward, terminated, truncated, info

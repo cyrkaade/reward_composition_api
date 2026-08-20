@@ -44,10 +44,10 @@ set -euo pipefail
 #   is passed explicitly even though the block already sets it, so metadata
 #   records the tested value.
 #
-# Atari envs are built by the suite with obs_type="ram" (128 bytes), frameskip 4
-# and repeat_action_probability 0.25. The priors read `true_reward`,
-# info["lives"] and info["episode_frame_number"] -- never the RAM bytes, which
-# have no documented meaning. See partials/sel_mspacman.py.
+# The current suite gives Atari PPO/reward models 4x84x84 pixels and gives a
+# synchronized 128-byte RAM snapshot to partials. These archived sel3 priors
+# still read `true_reward` and info["lives"] for reproducibility; the new
+# ntscreen experiment uses RAM-only priors from partials/atari_ram_screen.py.
 #
 # AtariSuite sets default_active_learning = False; --active-learning below
 # overrides that, so all three cells use the same query selection as the rest

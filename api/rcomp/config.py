@@ -21,9 +21,9 @@ BOX2D_SUITE = "box2d"
 GYM_SUITE = "gym"
 TRAIN_SUITES = SUITE_NAMES
 
-TRAIN_MODES = ("true", "partial", "feedback", "naive", "delta")
-PREFERENCE_MODES = ("feedback", "naive", "delta")
-PARTIAL_REQUIRED_MODES = ("partial", "naive", "delta")
+TRAIN_MODES = ("true", "partial", "feedback", "naive", "weighted_sum", "delta")
+PREFERENCE_MODES = ("feedback", "naive", "weighted_sum", "delta")
+PARTIAL_REQUIRED_MODES = ("partial", "naive", "weighted_sum", "delta")
 
 FINAL_POLICIES = ("best", "last")
 PLOT_MODES = ("best", "raw")
@@ -134,9 +134,12 @@ class ExperimentConfig:
     normalize_model_reward: bool = _f(False, "Standardize model rewards to the target mean/std")
     model_reward_target_mean: float = _f(0.0, "Target mean for normalized model rewards")
     model_reward_target_std: float = _f(1.0, "Target std for normalized model rewards")
-    include_partial_feature: bool | None = _f(None, "Feed the partial reward to the reward model (defaults to naive/delta modes)")
+    include_partial_feature: bool | None = _f(None, "Feed the partial reward to the reward model (defaults to naive/weighted_sum/delta modes)")
     normalize_partial_reward: bool = _f(False, "Normalize the partial reward with running stats in the model input, delta loss, and composed reward")
-    partial_alpha: float = _f(1.0, "Expert-confidence coefficient on the partial reward in the delta loss and composed reward")
+    partial_alpha: float = _f(
+        1.0,
+        "Expert-confidence coefficient; weighted_sum uses alpha*norm(partial) + (1-alpha)*norm(reward_model)",
+    )
     learn_partial_alpha: bool = _f(False, "Learn alpha as a reward-model parameter, anchored to partial_alpha by an MSE term")
     partial_alpha_penalty: float = _f(1.0, "Weight of the mse(alpha, partial_alpha) anchor when alpha is learned")
     partial_prediction_coef: float = _f(0.0, "Weight of the auxiliary MSE loss for predicting the (normalized) partial reward; 0 disables the extra head")
@@ -339,10 +342,15 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         )
     if config.mode in PARTIAL_REQUIRED_MODES and not config.partial:
         raise ConfigError(f"Mode '{config.mode}' requires --partial with a manually written partial reward.")
-    if config.normalize_partial_reward and config.mode not in ("naive", "delta"):
-        raise ConfigError("normalize_partial_reward requires mode 'naive' or 'delta'")
-    if config.partial_alpha != 1.0 and config.mode not in ("naive", "delta"):
-        raise ConfigError("partial_alpha requires mode 'naive' or 'delta'")
+    if config.normalize_partial_reward and config.mode not in ("naive", "weighted_sum", "delta"):
+        raise ConfigError("normalize_partial_reward requires mode 'naive', 'weighted_sum', or 'delta'")
+    if config.partial_alpha != 1.0 and config.mode not in ("naive", "weighted_sum", "delta"):
+        raise ConfigError("partial_alpha requires mode 'naive', 'weighted_sum', or 'delta'")
+    if config.mode == "weighted_sum":
+        if not (config.normalize_partial_reward and config.normalize_model_reward):
+            raise ConfigError("weighted_sum requires --normalize-partial-reward and --normalize-model-reward")
+        if not 0.0 <= config.partial_alpha <= 1.0:
+            raise ConfigError("weighted_sum partial_alpha must be between 0 and 1")
     if config.learn_partial_alpha and config.mode != "delta":
         raise ConfigError("learn_partial_alpha requires mode 'delta'")
     if config.partial_alpha_penalty < 0:
@@ -352,7 +360,7 @@ def _validate_experiment(config: ExperimentConfig) -> None:
     if config.partial_prediction_coef > 0 and config.mode != "delta":
         raise ConfigError("partial_prediction_coef requires mode 'delta'")
     if config.batchnorm_model_reward and config.mode not in PREFERENCE_MODES:
-        raise ConfigError("batchnorm_model_reward requires a preference mode (feedback/naive/delta)")
+        raise ConfigError("batchnorm_model_reward requires a preference mode")
     if config.gate_partial and config.mode not in ("delta", "naive"):
         raise ConfigError("gate_partial requires mode 'delta' (joint) or 'naive' (frozen-trunk gate)")
     if config.gate_partial and config.learn_partial_alpha:
@@ -434,7 +442,7 @@ def _validate_experiment(config: ExperimentConfig) -> None:
     if config.holdout_pairs < 0:
         raise ConfigError("holdout_pairs must be non-negative")
     if config.holdout_pairs and config.mode not in PREFERENCE_MODES:
-        raise ConfigError("holdout_pairs requires a preference mode (feedback/naive/delta)")
+        raise ConfigError("holdout_pairs requires a preference mode")
     if config.ensemble_bootstrap and config.reward_model_ensemble_size <= 1:
         raise ConfigError("ensemble_bootstrap requires reward_model_ensemble_size > 1")
     if config.ensemble_bootstrap and config.ensemble_training != "full":
@@ -445,7 +453,7 @@ def _validate_experiment(config: ExperimentConfig) -> None:
     if config.tanh_model_reward and config.batchnorm_model_reward:
         raise ConfigError("tanh_model_reward and batchnorm_model_reward are mutually exclusive")
     if config.tanh_model_reward and config.mode not in PREFERENCE_MODES:
-        raise ConfigError("tanh_model_reward requires a preference mode (feedback/naive/delta)")
+        raise ConfigError("tanh_model_reward requires a preference mode")
     if config.tanh_scale <= 0:
         raise ConfigError("tanh_scale must be greater than zero")
     if config.tanh_scale != 1.0 and not config.tanh_model_reward:

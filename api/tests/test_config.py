@@ -75,7 +75,7 @@ def test_explicit_values_are_not_overridden():
 
 
 def test_partial_required_modes():
-    for mode in ("partial", "naive", "delta"):
+    for mode in ("partial", "naive", "weighted_sum", "delta"):
         with pytest.raises(ConfigError, match="requires --partial"):
             normalize_experiment_config(ExperimentConfig(suite="gym", mode=mode))
 
@@ -84,6 +84,28 @@ def test_partial_required_modes():
 
     for mode in ("true", "feedback"):
         assert normalize_experiment_config(ExperimentConfig(suite="gym", mode=mode)).mode == mode
+
+
+def test_weighted_sum_requires_normalization_and_convex_alpha():
+    base = dict(suite="gym", mode="weighted_sum", partial="example_cartpole")
+    with pytest.raises(ConfigError, match="requires --normalize-partial-reward"):
+        normalize_experiment_config(ExperimentConfig(**base, partial_alpha=0.5))
+    for alpha in (-0.01, 1.01):
+        with pytest.raises(ConfigError, match="between 0 and 1"):
+            normalize_experiment_config(ExperimentConfig(
+                **base,
+                partial_alpha=alpha,
+                normalize_partial_reward=True,
+                normalize_model_reward=True,
+            ))
+    config = normalize_experiment_config(ExperimentConfig(
+        **base,
+        partial_alpha=0.25,
+        normalize_partial_reward=True,
+        normalize_model_reward=True,
+    ))
+    assert config.mode == "weighted_sum"
+    assert config.partial_alpha == 0.25
 
 
 def test_validation_errors():

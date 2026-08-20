@@ -1,12 +1,15 @@
-"""Five hand-written priors for ALE/MsPacman-v5, for the sel3 screen.
+"""Archived hand-written priors for the old ALE/MsPacman-v5 sel3 screen.
+
+These oracle-score-based priors are retained only to reproduce sel3. They are
+not eligible for the new non-timid screen, which uses ``atari_ram_screen.py``.
+The current Atari pipeline gives policies/reward models stacked pixels and
+passes synchronized RAM snapshots to partial functions.
 
 WHAT A PRIOR CAN SEE HERE
 -------------------------
-The Atari suite builds its envs with obs_type="ram", so the observation is 128
-raw bytes with no documented meaning. Reading it would mean hard-coding a memory
-map per game, which is exactly the kind of thing that breaks silently. Every
-prior below is therefore built from the three signals that ARE documented and
-were verified present on the installed ale-py 0.10.1:
+At the time of sel3, the Atari suite exposed 128 RAM bytes as the policy
+observation and these priors avoided a memory map. Every archived prior below
+is therefore built from the three signals that were verified present then:
 
     true_reward                  the raw score delta for this step
     info["lives"]                3 at the start of MsPacman

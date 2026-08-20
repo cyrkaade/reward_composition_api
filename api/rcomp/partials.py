@@ -248,7 +248,7 @@ def resolve_custom_partial(config) -> PartialSpec | None:
 def include_partial_feature(config) -> bool:
     if config.include_partial_feature is not None:
         return bool(config.include_partial_feature)
-    return config.mode in {"naive", "delta"}
+    return config.mode in {"naive", "weighted_sum", "delta"}
 
 
 def partials_search_roots() -> list[Path]:

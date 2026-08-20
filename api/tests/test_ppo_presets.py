@@ -111,8 +111,8 @@ def test_schedules_resolve_to_callables_and_warn():
     assert isinstance(hyperparams["clip_range"], LinearSchedule)
 
 
-def test_atari_preset_does_not_override_the_ram_obs_policy():
-    """AtariSuite uses obs_type='ram' + MlpPolicy; the zoo block assumes CnnPolicy."""
+def test_atari_preset_leaves_pixel_policy_to_suite():
+    """AtariSuite owns the stacked-pixel CnnPolicy choice."""
     assert "policy" not in PRESETS["atari"]["ppo"]
 
 

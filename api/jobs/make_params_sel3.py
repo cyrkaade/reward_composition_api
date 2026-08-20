@@ -30,8 +30,8 @@ comparisons. Qbert's version is the sharper one -- falling off the pyramid ends
 a life instantly -- and MsPacman's is the denser one, so between them they cover
 both regimes.
 
-MEASURED on the installed build (ale-py 0.10.1, obs_type="ram", frameskip 4,
-sticky actions 0.25), random policy: MsPacman scores a median 190 over a median
+MEASURED on the historical build (ale-py 0.10.1, RAM policy observations,
+frameskip 4, sticky actions 0.25), random policy: MsPacman scores a median 190 over a median
 449 steps; Qbert 200 over 312. BipedalWalker-v3 runs a median 856 steps (min 50,
 max 1600).
 

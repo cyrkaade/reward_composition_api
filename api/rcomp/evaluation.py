@@ -18,6 +18,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from .envs import action_for_space
 from .partials import PartialSpec
 from .suites import Suite
+from .rewards.wrapper import partial_observation_from_info
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,7 @@ def evaluate_components(
     try:
         for episode_index in range(n_eval_episodes):
             obs, info = env.reset(seed=seed + episode_index)
+            partial_obs = partial_observation_from_info(obs, info, consume=True)
             if partial is not None:
                 partial.reset(info)
             done = False
@@ -109,17 +111,27 @@ def evaluate_components(
                 action, _ = model.predict(model_obs, deterministic=deterministic)
                 env_action = action_for_space(env.action_space, action)
                 new_obs, reward, terminated, truncated, info = env.step(env_action)
+                new_partial_obs = partial_observation_from_info(new_obs, info, consume=True)
                 done = terminated or truncated
                 total += float(reward)
                 length += 1
 
                 if partial is not None:
-                    partial_step = partial.step(obs, env_action, new_obs, reward, terminated, truncated, info)
+                    partial_step = partial.step(
+                        partial_obs,
+                        env_action,
+                        new_partial_obs,
+                        reward,
+                        terminated,
+                        truncated,
+                        info,
+                    )
                     partial_total += float(partial_step.partial)
                     for key, value in partial_step.components.items():
                         if key in components:
                             components[key] += float(value)
                 obs = new_obs
+                partial_obs = new_partial_obs
 
             rows.append(
                 {
