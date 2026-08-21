@@ -63,6 +63,16 @@ case "$CELL" in
   hopper)
     SUITE=mujoco; ENV=Hopper-v5
     FRAGMENT=10; COLLECTION=30000; EVALEP=10 ;;
+  pusher)
+    SUITE=mujoco; ENV=Pusher-v5
+    FRAGMENT=25; COLLECTION=20000; EVALEP=10 ;;
+  swimmer)
+    SUITE=mujoco; ENV=Swimmer-v5
+    FRAGMENT=50; COLLECTION=50000; EVALEP=5
+    PPO_KWARGS='{"n_steps":256,"gamma":0.9999,"ent_coef":0.01,"target_kl":0.03}' ;;
+  walker)
+    SUITE=mujoco; ENV=Walker2d-v5
+    FRAGMENT=10; COLLECTION=30000; EVALEP=10 ;;
   *) echo "unknown cell: $CELL" >&2; exit 2 ;;
 esac
 

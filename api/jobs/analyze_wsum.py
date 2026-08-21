@@ -18,19 +18,35 @@ from pathlib import Path
 
 import numpy as np
 
-CELLS = ["ll", "ant", "hopper", "reacher", "bipedal", "mspacman", "qbert"]
+CELLS = ["ll", "ant", "hopper", "reacher", "bipedal", "pusher", "swimmer", "walker", "mspacman", "qbert"]
 CELL_TITLES = {
     "ll": "LunarLander-v3",
     "ant": "Ant-v5",
     "hopper": "Hopper-v5",
     "reacher": "Reacher-v5",
     "bipedal": "BipedalWalker-v3",
+    "pusher": "Pusher-v5",
+    "swimmer": "Swimmer-v5",
+    "walker": "Walker2d-v5",
     "mspacman": "MsPacman",
     "qbert": "Qbert",
 }
-ALPHAS = ["020", "040", "060", "080"]
-ALPHA_LABEL = {"020": "alpha=0.2", "040": "alpha=0.4", "060": "alpha=0.6", "080": "alpha=0.8"}
-ALPHA_COLOR = {"020": "#4C72B0", "040": "#8172B2", "060": "#C44E52", "080": "#D95F02"}
+ALPHAS = ["020", "040", "050", "060", "080"]
+ALPHA_LABEL = {
+    "020": "alpha=0.2",
+    "040": "alpha=0.4",
+    "050": "alpha=0.5",
+    "060": "alpha=0.6",
+    "080": "alpha=0.8",
+}
+# blue -> orange ramp, so the eye reads increasing weight on the prior
+ALPHA_COLOR = {
+    "020": "#4C72B0",
+    "040": "#7B68AE",
+    "050": "#9B59B6",
+    "060": "#C44E52",
+    "080": "#D95F02",
+}
 BASE_STYLE = {
     "true": ("true reward", "black", "-", 2.2),
     "vanilla": ("vanilla RLHF", "#2CA02C", "-", 1.8),
@@ -117,12 +133,42 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--logs", default="logs")
     ap.add_argument("--out", default="logs/wsum")
+    ap.add_argument(
+        "--complete-seeds-only",
+        action="store_true",
+        help="keep only seeds for which EVERY arm of a cell has finished, so all "
+             "arms in a panel are compared on the same seeds rather than at different n",
+    )
     args = ap.parse_args()
 
     root = Path(args.logs)
     runs = load_runs(root)
     if not runs:
         raise SystemExit(f"no wsum runs found under {root}")
+
+    if args.complete_seeds_only:
+        # A seed counts as complete for a cell when every arm of that cell has a
+        # finished run for it. Mid-flight the grid is ragged, and comparing a
+        # 9-seed median against a 4-seed one is not a comparison.
+        by_cell_arm = defaultdict(set)
+        for r in runs:
+            by_cell_arm[r["cell"]].add(r["arm"])
+        seeds_by_cell_arm = defaultdict(set)
+        for r in runs:
+            seeds_by_cell_arm[(r["cell"], r["arm"])].add(r["seed"])
+        keep = {}
+        for cell, arms_present in by_cell_arm.items():
+            common = None
+            for arm in arms_present:
+                seeds = seeds_by_cell_arm[(cell, arm)]
+                common = seeds if common is None else (common & seeds)
+            keep[cell] = common or set()
+            print(f"{cell}: {len(arms_present)} arms, complete seeds {sorted(keep[cell])}")
+        before = len(runs)
+        runs = [r for r in runs if r["seed"] in keep.get(r["cell"], set())]
+        print(f"complete-seeds filter: {before} -> {len(runs)} runs")
+        if not runs:
+            raise SystemExit("no seed is complete across every arm yet")
 
     grouped = defaultdict(list)
     for r in runs:
