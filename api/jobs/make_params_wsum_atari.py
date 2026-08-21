@@ -8,6 +8,7 @@ the two query budgets differ.
 Row format:  CELL ARM SEED PARTIAL BUDGET ALPHA
 """
 
+import os
 from pathlib import Path
 
 CELLS = {
@@ -19,7 +20,7 @@ CELLS = {
 # observations give the reward model far less to generalize from per label.
 BUDGETS = (2800, 5600)
 ALPHAS = (0.20, 0.40, 0.60, 0.80)
-SEEDS = range(10)
+SEEDS = range(int(os.environ.get("SEEDS", "10")))
 
 
 def arms():

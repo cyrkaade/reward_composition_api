@@ -6,7 +6,7 @@
 #SBATCH --time=08:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --array=1-260
+#SBATCH --array=1-130
 #SBATCH --requeue
 set -euo pipefail
 
@@ -17,8 +17,8 @@ export PATH="/scratch/work/akishea1/envs/rcomp/bin:${PATH}"
 
 PARAMS_FILE="${PARAMS_FILE:-jobs/params_wsum_atari.txt}"
 LAUNCHER="${LAUNCHER-srun}"
-EXPECTED_ROWS="${EXPECTED_ROWS:-260}"
-TIMESTEPS="${TIMESTEPS:-1000000}"
+EXPECTED_ROWS="${EXPECTED_ROWS:-130}"
+TIMESTEPS="${TIMESTEPS:-400000}"
 # The pixel CNN reward model is the whole reason Atari was infeasible before.
 # cuda + batched env inference measured 2.66x on an H200 (CLAUDE.md, 2026-08-21).
 # The ensemble vmap flag is deliberately NOT set: it measured net-negative.
@@ -52,26 +52,34 @@ case "$CELL" in
   *) echo "unknown cell: $CELL" >&2; exit 2 ;;
 esac
 
-# Fragment 25 = 100 raw frames at frameskip 4, ~1.7s of play: the same segment
-# length the non-Atari cells use, and half the collection cost of 50.
-FRAGMENT=25
-COLLECTION=50000
+# Fragment 10 = 40 raw frames at frameskip 4. Shorter than the 25 the non-Atari
+# cells mostly use (Hopper already uses 10), and chosen for cost: fragment
+# length multiplies BOTH the round-0 collection needed for label delivery AND
+# the per-pair cost of every reward-model gradient step, so 25 -> 10 is a 2.5x
+# cut on the two dominant terms at once.
+FRAGMENT="${FRAGMENT:-10}"
+COLLECTION="${COLLECTION:-20000}"
+# The reward model trains on cumulative pairs each round with batch 32. At the
+# 100-epoch default the final q5600 round is 175 batches x 100 epochs x 3
+# members, each batch a 640-image CNN forward+backward -- hours per run. The
+# 0.97 train-accuracy stop is not guaranteed to fire on pixels, so cap it.
+RM_EPOCHS="${RM_EPOCHS:-10}"
 # Round 0 is the binding constraint on label delivery. query_model is None
 # there, so queries are drawn UNIFORMLY even with --active-learning on, and
 # random_query_pairs shuffles and zips -- no fragment is reused, so round 0
 # needs 2 fragments per pair. Rounds 1-4 use the candidate pool, which samples
 # pairs independently and may reuse a fragment, so they need far fewer.
 #
-# Measured 2026-08-21 on MsPacman: 56000 steps at fragment 50 yielded 1060
-# fragments per stream against an ideal 1120, i.e. 94.6% after the per-episode
-# remainder is discarded. Required round-0 collection is therefore
-#   2 * (budget/5) * fragment / 0.946
-# = 29.6k for q2800 and 59.2k for q5600; rounded up for margin below.
-case "$BUDGET" in
-  2800) ROUND0=35000 ;;
-  5600) ROUND0=65000 ;;
-  *)    ROUND0=65000 ;;
-esac
+# round0 = 2 * (budget/5) * fragment / 0.946, rounded up for margin. The 0.946
+# is measured, not assumed: 56000 steps at fragment 50 on MsPacman yielded 1060
+# fragments per stream against an ideal 1120.
+ROUND0=$(python -c "
+import math
+budget, fragment = $BUDGET, $FRAGMENT
+need = 2 * (budget / 5) * fragment / 0.946
+print(int(math.ceil(need * 1.10 / 1000.0)) * 1000)
+")
+if [ -z "$ROUND0" ]; then echo "failed to compute ROUND0" >&2; exit 2; fi
 
 LOGDIR="logs/wsuma_${CELL}_${ARM}"
 RUNNAME="wsuma_${CELL}_${ARM}_seed${SEED}"
@@ -101,7 +109,7 @@ ARGS=(
   --n-envs 8 --device "$POLICY_DEVICE"
   --timesteps "$TIMESTEPS" --seed "$SEED"
   --final-policy last
-  --eval-freq 25000 --n-eval-episodes 5 --final-eval-episodes 20
+  --eval-freq "${EVAL_FREQ:-25000}" --n-eval-episodes "${EVAL_EPS:-5}" --final-eval-episodes "${FINAL_EVAL_EPS:-20}"
   --run-name "$RUNNAME" --log-dir "$LOGDIR"
 )
 
@@ -113,6 +121,7 @@ RM=(
   --reward-model-ensemble-size 3
   --reward-model-lr 0.0003
   --reward-model-batch-size 32
+  --reward-model-epochs "$RM_EPOCHS"
   --reward-model-loss-reduction mean
   --reward-model-l1 0
   --reward-output-l1 0.001
