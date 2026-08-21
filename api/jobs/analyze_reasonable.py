@@ -70,9 +70,9 @@ def curve(path: Path) -> tuple[np.ndarray, np.ndarray] | None:
     return np.asarray(payload["timesteps"], dtype=np.int64), results.mean(axis=1)
 
 
-def load_runs(root: Path) -> list[dict]:
+def load_runs(root: Path, run_prefix: str = "reasonable") -> list[dict]:
     runs = []
-    for metadata_path in sorted(root.glob("reasonable_*/*/metadata.json")):
+    for metadata_path in sorted(root.glob(f"{run_prefix}_*/*/metadata.json")):
         run_dir = metadata_path.parent
         try:
             _, cell, variant = run_dir.parent.name.split("_", 2)
@@ -371,11 +371,14 @@ def main() -> None:
     parser.add_argument("--root", default="logs")
     parser.add_argument("--params", default="jobs/params_reasonable.txt")
     parser.add_argument("--output-prefix", default="logs/reasonable_screen")
+    # The fast pilot writes logs/fastatari_<cell>_<variant>/; everything after the
+    # first underscore is parsed the same way, so only the glob has to change.
+    parser.add_argument("--run-prefix", default="reasonable", help="log-directory prefix to read")
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
     expected, variants = read_expected(Path(args.params))
-    runs = load_runs(Path(args.root))
+    runs = load_runs(Path(args.root), args.run_prefix)
     validate(runs, expected)
     grouped = group_runs(runs)
     prefix = Path(args.output_prefix)
