@@ -23,19 +23,29 @@ set -euo pipefail
 #     single-env rollouts (deterministic, stochastic, component).  At 20k that
 #     was ~19.5k single-env eval steps per 20k training steps.
 #   * n-eval-episodes 5 instead of 10.
-#   * OMP_NUM_THREADS=1 by default: the reward model is called once per env per
-#     step at batch size 1, and multi-threaded batch-1 convolutions lose badly
-#     to single-threaded ones.  Override with OMP=<n> to compare.
+#   * Thread count left at the Slurm default (one per allocated CPU), which
+#     measured faster than OMP_NUM_THREADS=1 despite the reward model being
+#     called at batch size 1 once per env per step.  OMP=<n> overrides it.
 #   * ellis_users account: fairshare factor 0.50 against aalto_users' 0.0056,
 #     which is the difference between starting now and starting in three days.
 
 PARAMS_FILE="${PARAMS_FILE:-jobs/params_fastatari.txt}"
 EXPECTED_ROWS="${EXPECTED_ROWS:-21}"
-BUDGET="${BUDGET:-350}"
-FRAGMENT="${FRAGMENT:-64}"
+# The vanilla arm is the zero-prior FLOOR of this screen, so starving it of
+# labels would flatter every partial.  1400 pairs of 25-step clips is four
+# times the reasonable grid's 350 and still fits: preferences.py builds the
+# whole training tensor before the epoch loop (rated_pairs_to_tensors, ~L522),
+# at pairs * 2 * fragment * 28225 * 4 bytes.  1400x25 = 7.9 GB; the 5600 pairs
+# that Christiano et al. used on Atari would be 31.6 GB at 25 and 81 GB at 64.
+BUDGET="${BUDGET:-1400}"
+FRAGMENT="${FRAGMENT:-25}"
 TIMESTEPS="${TIMESTEPS:-1000000}"
-export OMP_NUM_THREADS="${OMP:-1}"
-export MKL_NUM_THREADS="$OMP_NUM_THREADS"
+# Torch defaults to one thread per allocated CPU, which measured fastest here;
+# OMP=<n> overrides it for comparison (OMP=1 came out ~20% slower on vanilla).
+if [ -n "${OMP:-}" ]; then
+  export OMP_NUM_THREADS="$OMP"
+  export MKL_NUM_THREADS="$OMP"
+fi
 
 if [ ! -f "$PARAMS_FILE" ]; then
   echo "$PARAMS_FILE missing; run: python jobs/make_params_fastatari.py" >&2
@@ -134,5 +144,5 @@ case "$VARIANT" in
   *) ARGS+=(--mode partial --partial "$PARTIAL") ;;
 esac
 
-echo "task=${SLURM_ARRAY_TASK_ID} cell=$CELL variant=$VARIANT seed=$SEED omp=$OMP_NUM_THREADS on $(hostname)"
+echo "task=${SLURM_ARRAY_TASK_ID} cell=$CELL variant=$VARIANT seed=$SEED omp=${OMP_NUM_THREADS:-default} on $(hostname)"
 srun $PY -m rcomp train "${ARGS[@]}"
