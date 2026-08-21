@@ -1,5 +1,38 @@
 # Triton experiment scripts
 
+## Reasonable partial-only calibration (550 runs)
+
+This is the current 11-environment screen. Each environment runs true-reward
+PPO, q350 vanilla RLHF, and eight aligned partial-only rewards for seeds 0..4 at
+2M policy timesteps. The candidate table is extensible and is not constrained
+to five rewards per environment. Box2D/MuJoCo (400 runs) and Atari (150 runs)
+are independent arrays; Atari requests one A100 per run.
+
+```bash
+ssh akishea1@triton.aalto.fi
+cd /scratch/work/akishea1/reward_composition_api
+git pull
+cd api
+module load mamba
+source activate /scratch/work/akishea1/envs/rcomp
+pip install -e .
+python jobs/make_params_reasonable.py
+mkdir -p logs/slurm
+sbatch jobs/run_reasonable.sh
+sbatch jobs/run_reasonable_atari.sh
+```
+
+After both arrays finish, generate the paired tail-of-training report and three
+graphs on Triton:
+
+```bash
+python jobs/analyze_reasonable.py
+```
+
+The primary score is the per-seed average of the last five checkpoints, never a
+peak or a single endpoint. Atari uses sampled-policy return as primary and puts
+argmax-policy return in `reasonable_screen_atari_deterministic.png` only.
+
 Two array jobs. Everything is version-controlled, so on Triton it is
 `git pull` then `sbatch` — no pasting long commands into a terminal.
 

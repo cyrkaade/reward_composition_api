@@ -36,20 +36,26 @@ def load_runs() -> list[dict]:
             det_timesteps, det_means = load_curve(deterministic_path)
             if means.size < 2 or det_means.size < 2:
                 raise SystemExit(f"too few evaluations in {run_dir}")
+            if means.size < 5 or det_means.size < 5:
+                raise SystemExit(f"need at least five evaluations for stable endpoints in {run_dir}")
+            head = float(means[:5].mean())
+            tail = float(means[-5:].mean())
+            det_head = float(det_means[:5].mean())
+            det_tail = float(det_means[-5:].mean())
             runs.append({
                 "cell": cell,
                 "env_id": metadata["env_id"],
                 "seed": seed,
-                "start": float(means[0]),
-                "final": float(means[-1]),
+                "start": head,
+                "final": tail,
                 "peak": float(means.max()),
-                "delta": float(means[-1] - means[0]),
+                "delta": tail - head,
                 "timesteps": timesteps,
                 "means": means,
-                "det_start": float(det_means[0]),
-                "det_final": float(det_means[-1]),
+                "det_start": det_head,
+                "det_final": det_tail,
                 "det_peak": float(det_means.max()),
-                "det_delta": float(det_means[-1] - det_means[0]),
+                "det_delta": det_tail - det_head,
                 "det_timesteps": det_timesteps,
                 "det_means": det_means,
             })
@@ -68,7 +74,12 @@ def write_outputs(runs: list[dict]) -> None:
         for run in runs:
             writer.writerow({field: run[field] for field in fields})
 
-    report = {"timesteps": 400_000, "seeds": list(SEEDS), "environments": {}}
+    report = {
+        "timesteps": 400_000,
+        "seeds": list(SEEDS),
+        "endpoint": "mean of first five versus mean of last five checkpoints per seed",
+        "environments": {},
+    }
     for cell in CELLS:
         rows = [run for run in runs if run["cell"] == cell]
         starts = np.asarray([run["start"] for run in rows])
@@ -77,12 +88,19 @@ def write_outputs(runs: list[dict]) -> None:
         det_starts = np.asarray([run["det_start"] for run in rows])
         det_finals = np.asarray([run["det_final"] for run in rows])
         det_deltas = det_finals - det_starts
-        passed = bool(np.median(deltas) > 0 and np.count_nonzero(deltas > 0) >= 3)
+        median_start = float(np.median(starts))
+        median_delta = float(np.median(deltas))
+        # A one-point absolute and five-percent relative floor prevents a tiny
+        # score wobble (Pong's +0.2) from being called learning.  Five seeds are
+        # still a descriptive smoke check, so require consistency in 4/5 seeds.
+        practical_threshold = max(1.0, 0.05 * abs(median_start))
+        passed = bool(median_delta >= practical_threshold and np.count_nonzero(deltas > 0) >= 4)
         report["environments"][cell] = {
             "primary_evaluation_policy": "stochastic",
-            "median_start": float(np.median(starts)),
+            "median_start": median_start,
             "median_final": float(np.median(finals)),
-            "median_delta": float(np.median(deltas)),
+            "median_delta": median_delta,
+            "practical_improvement_threshold": practical_threshold,
             "improved_seeds": int(np.count_nonzero(deltas > 0)),
             "deterministic_median_start": float(np.median(det_starts)),
             "deterministic_median_final": float(np.median(det_finals)),
@@ -92,7 +110,8 @@ def write_outputs(runs: list[dict]) -> None:
         }
         print(
             f"{cell:9s} stochastic start={np.median(starts):8.1f} final={np.median(finals):8.1f} "
-            f"delta={np.median(deltas):+8.1f} improved={np.count_nonzero(deltas > 0)}/5 "
+            f"delta={median_delta:+8.1f} threshold={practical_threshold:6.1f} "
+            f"improved={np.count_nonzero(deltas > 0)}/5 "
             f"{'PASS' if passed else 'NO CLEAR IMPROVEMENT'}; "
             f"deterministic final={np.median(det_finals):8.1f} delta={np.median(det_deltas):+8.1f}"
         )
