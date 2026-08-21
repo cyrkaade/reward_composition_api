@@ -10,11 +10,17 @@
 #SBATCH --requeue
 set -euo pipefail
 
+# Make the job self-contained: sbatch exports the submitting shell's PATH, which
+# does not necessarily have the rcomp env activated.
+export PATH="/scratch/work/akishea1/envs/rcomp/bin:${PATH}"
+
 # Alpha sweep for the normalized weighted sum, against true / vanilla / naive.
 # Environment blocks are copied verbatim from run_reasonable.sh so the partials
 # chosen by that screen are evaluated under the configuration that screened them.
 
 PARAMS_FILE="${PARAMS_FILE:-jobs/params_wsum.txt}"
+# a bundling wrapper already holds the allocation and sets LAUNCHER=""
+LAUNCHER="${LAUNCHER-srun}"
 EXPECTED_ROWS="${EXPECTED_ROWS:-650}"
 TIMESTEPS="${TIMESTEPS:-2000000}"
 if [ ! -f "$PARAMS_FILE" ]; then
@@ -85,7 +91,7 @@ fi
 
 ARGS=(
   --suite "$SUITE" --env-id "$ENV"
-  --n-envs 8 --policy-learning-kwargs "$PPO_KWARGS"
+  --n-envs 8 --policy-learning-kwargs "$PPO_KWARGS" --device cpu
   --timesteps "$TIMESTEPS" --seed "$SEED"
   --final-policy last
   --eval-freq 20000 --n-eval-episodes "$EVALEP" --final-eval-episodes 30
@@ -128,4 +134,4 @@ case "$ARM" in
   *) echo "unknown arm: $ARM" >&2; exit 2 ;;
 esac
 
-srun python -m rcomp train "${ARGS[@]}"
+${LAUNCHER} python -m rcomp train "${ARGS[@]}"
