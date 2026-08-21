@@ -27,12 +27,18 @@ CELLS = {
 
 
 def rows():
-    for cell, (partial, low, high) in CELLS.items():
-        for seed in SEEDS:
+    """Seed-major order.
+
+    Triton is giving this account one GPU slot at a time, so the grid may well
+    be stopped part-way.  Emitting every cell and every arm at seed 0, then at
+    seed 1, and so on means a truncated run is a complete figure with fewer
+    seeds rather than a couple of finished environments and three empty ones.
+    """
+    for seed in SEEDS:
+        for cell, (partial, low, high) in CELLS.items():
             # the ceiling uses no labels, so it is budget-independent
             yield cell, "true", seed, "-", 0, "1.0"
-        for budget in (low, high):
-            for seed in SEEDS:
+            for budget in (low, high):
                 yield cell, f"vanilla_q{budget}", seed, "-", budget, "1.0"
                 yield cell, f"naive_q{budget}", seed, partial, budget, "1.0"
                 for alpha in ALPHAS:
