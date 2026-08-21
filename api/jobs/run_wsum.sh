@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=wsum
-#SBATCH --account=elec
+#SBATCH --account=aalto_users
 #SBATCH --output=logs/slurm/wsum_%A_%a.out
 #SBATCH --error=logs/slurm/wsum_%A_%a.err
 #SBATCH --time=06:00:00
