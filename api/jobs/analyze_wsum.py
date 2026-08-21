@@ -132,6 +132,11 @@ def main():
     cells = [c for c in CELLS if any(k[0] == c for k in grouped)]
     budgets = sorted({k[2] for k in grouped if k[2] is not None})
     print(f"loaded {len(runs)} runs | cells={cells} | budgets={budgets}")
+    if not budgets:
+        # only the label-free ceiling has landed so far; still draw it so the
+        # partial grid is inspectable mid-flight
+        budgets = [0]
+        print("no budgeted arm has finished yet; plotting the true arm alone")
 
     order = ["true", "vanilla", "naive"] + [f"ws{a}" for a in ALPHAS]
 
