@@ -48,15 +48,29 @@ def read_expected(path: Path) -> tuple[dict[tuple[str, str, int], str], dict[str
         variants.setdefault(cell, [])
         if variant not in variants[cell]:
             variants[cell].append(variant)
-    if tuple(variants) != CELLS:
-        raise SystemExit(f"parameter cell order/content differs from {CELLS}: {tuple(variants)}")
+    # A parameter file covering only some cells is fine -- the fast Atari pilot
+    # runs three of the eleven.  What still has to hold is that every cell is
+    # known and the rows keep the CELLS order.
+    unknown = [cell for cell in variants if cell not in CELLS]
+    if unknown:
+        raise SystemExit(f"parameter file names cells that are not in {CELLS}: {unknown}")
+    if tuple(variants) != tuple(cell for cell in CELLS if cell in variants):
+        raise SystemExit(f"parameter cell order differs from {CELLS}: {tuple(variants)}")
     for cell, cell_variants in variants.items():
         if cell_variants[:2] != ["true", "vanilla"]:
             raise SystemExit(f"{cell}: true and vanilla must be the first two variants")
+        # What matters is that the arms are PAIRED -- same seeds everywhere in a
+        # cell, numbered from 0 -- not that there are exactly five of them; the
+        # fast pilot runs one seed.
+        cell_seeds = None
         for variant in cell_variants:
             seeds = sorted(seed for c, v, seed in expected if c == cell and v == variant)
-            if seeds != list(range(5)):
-                raise SystemExit(f"{cell}/{variant}: expected paired seeds 0..4, got {seeds}")
+            if seeds != list(range(len(seeds))):
+                raise SystemExit(f"{cell}/{variant}: seeds must be 0..N-1, got {seeds}")
+            if cell_seeds is None:
+                cell_seeds = seeds
+            elif seeds != cell_seeds:
+                raise SystemExit(f"{cell}/{variant}: seeds {seeds} do not match the cell's {cell_seeds}")
     return expected, variants
 
 
@@ -117,7 +131,7 @@ def load_runs(root: Path, run_prefix: str = "reasonable") -> list[dict]:
 
 
 def validate(
-    runs: list[dict], expected: dict[tuple[str, str, int], str]
+    runs: list[dict], expected: dict[tuple[str, str, int], str], allow_incomplete: bool = False
 ) -> dict[tuple[str, str, int], dict]:
     actual: dict[tuple[str, str, int], dict] = {}
     duplicates = []
@@ -133,6 +147,10 @@ def validate(
         for key in sorted(set(expected) & set(actual))
         if expected[key] != actual[key]["partial_reference"]
     ]
+    # Only absent runs are survivable: a duplicate, an extra, or a run whose
+    # partial reference does not match the parameter file means the grid on disk
+    # is not the grid that was asked for, and no flag should paper over that.
+    fatal = bool(extras or duplicates or mismatched) or (bool(missing) and not allow_incomplete)
     if missing or extras or duplicates or mismatched:
         print(
             f"INCOMPLETE/INVALID GRID: missing={len(missing)} extras={len(extras)} "
@@ -144,7 +162,9 @@ def validate(
         ):
             if values:
                 print(f"  {label}: {values[:15]}")
-        raise SystemExit(2)
+        if fatal:
+            raise SystemExit(2)
+        print("  --allow-incomplete: reporting on the runs that are present")
     return actual
 
 
@@ -157,11 +177,18 @@ def group_runs(runs: list[dict]) -> dict[tuple[str, str], list[dict]]:
     return grouped
 
 
-def paired_delta(left: list[dict], right: list[dict], field: str = "tail5") -> np.ndarray:
+def paired_delta(left: list[dict], right: list[dict], field: str = "tail5", allow_partial: bool = False) -> np.ndarray:
     left_by_seed = {row["seed"]: row[field] for row in left}
     right_by_seed = {row["seed"]: row[field] for row in right}
     if set(left_by_seed) != set(right_by_seed):
-        raise ValueError("paired comparison has different seeds")
+        # An unpaired comparison is normally a bug worth stopping for.  Under
+        # --allow-incomplete one arm may simply have a seed still running, so
+        # fall back to the seeds both arms have and let the win count say how
+        # many that was.
+        if not allow_partial:
+            raise ValueError("paired comparison has different seeds")
+        shared = sorted(set(left_by_seed) & set(right_by_seed))
+        return np.asarray([left_by_seed[seed] - right_by_seed[seed] for seed in shared])
     return np.asarray([left_by_seed[seed] - right_by_seed[seed] for seed in sorted(left_by_seed)])
 
 
@@ -179,7 +206,7 @@ def classify(position: float, valid_bracket: bool) -> str:
     return "above true (premise warning)"
 
 
-def summarize(grouped, variants: dict[str, list[str]]) -> dict:
+def summarize(grouped, variants: dict[str, list[str]], allow_incomplete: bool = False) -> dict:
     report = {
         "endpoint": f"mean of last {TAIL_CHECKPOINTS} periodic checkpoints per seed",
         "atari_primary_policy": "stochastic sampled policy",
@@ -189,36 +216,51 @@ def summarize(grouped, variants: dict[str, list[str]]) -> dict:
     }
     print("\nPrimary endpoint: per-seed mean of the last five checkpoints; paired seeds 0..4.")
     print("Atari uses stochastic sampled-policy return. Five seeds are descriptive; no p-values or pass flags.\n")
-    for cell in CELLS:
+    for cell in variants:
+        if not grouped.get((cell, "true")):
+            # Without the ceiling there is nothing to read a candidate against.
+            print(f"{cell}: skipped, no true run present")
+            continue
         true_rows = grouped[(cell, "true")]
-        vanilla_rows = grouped[(cell, "vanilla")]
+        # The floor may legitimately be absent while a vanilla run is still going.
+        # Everything that needs it then reports as unavailable rather than guessed.
+        vanilla_rows = grouped.get((cell, "vanilla")) or []
         true_value = med([row["tail5"] for row in true_rows])
         vanilla_value = med([row["tail5"] for row in vanilla_rows])
         bracket = true_value - vanilla_value
-        true_vanilla_deltas = paired_delta(true_rows, vanilla_rows)
-        bracket_threshold = max(1.0, 0.05 * max(abs(true_value), abs(vanilla_value)))
-        true_wins = int(np.count_nonzero(true_vanilla_deltas > 0))
-        # A tiny positive gap is not a usable ceiling/floor bracket.  This is the
-        # same practical floor that prevents the old Pong +0.2 smoke wobble from
-        # being called learning, plus a 4/5 paired-seed consistency requirement.
-        valid_bracket = bracket >= bracket_threshold and true_wins >= 4
+        if vanilla_rows:
+            true_vanilla_deltas = paired_delta(true_rows, vanilla_rows, allow_partial=allow_incomplete)
+            bracket_threshold = max(1.0, 0.05 * max(abs(true_value), abs(vanilla_value)))
+            true_wins = int(np.count_nonzero(true_vanilla_deltas > 0))
+            # A tiny positive gap is not a usable ceiling/floor bracket.  This is
+            # the same practical floor that prevents the old Pong +0.2 smoke
+            # wobble from being called learning, plus a 4/5 seed consistency
+            # requirement.
+            valid_bracket = bracket >= bracket_threshold and true_wins >= 4
+        else:
+            bracket_threshold = float("nan")
+            true_wins = 0
+            valid_bracket = False
         labels = med([row["synthetic_queries"] for row in vanilla_rows])
+        # With no floor, the only honest paired contrast left is against the ceiling.
+        reference_rows = vanilla_rows or true_rows
+        reference_name = "paired-v" if vanilla_rows else "paired-t"
         print("=" * 118)
         print(
             f"{cell}: true={true_value:.2f}, vanilla={vanilla_value:.2f}, "
-            f"true-vanilla={bracket:+.2f} (need {bracket_threshold:.2f}, wins {true_wins}/5), "
-            f"labels={labels:.0f}/350, "
+            f"true-vanilla={bracket:+.2f} (need {bracket_threshold:.2f}, wins {true_wins}/{len(true_rows)}), "
+            f"labels={labels:.0f}, "
             f"primary={true_rows[0]['primary_policy']}"
         )
         print(
-            f"{'candidate':28s} {'tail5':>11s} {'paired-v':>11s} {'wins':>7s} "
+            f"{'candidate':28s} {'tail5':>11s} {reference_name:>11s} {'wins':>7s} "
             f"{'position':>10s} {'learned':>11s}  interpretation"
         )
         candidate_payload = []
         for variant in variants[cell][2:]:
             rows = grouped[(cell, variant)]
             value = med([row["tail5"] for row in rows])
-            delta = paired_delta(rows, vanilla_rows)
+            delta = paired_delta(rows, reference_rows, allow_partial=allow_incomplete)
             position = (value - vanilla_value) / bracket if valid_bracket else float("nan")
             learning = med([row["tail5"] - row["head5"] for row in rows])
             verdict = classify(position, valid_bracket)
@@ -226,8 +268,9 @@ def summarize(grouped, variants: dict[str, list[str]]) -> dict:
                 "variant": variant,
                 "partial_reference": rows[0]["partial_reference"],
                 "median_tail5": value,
-                "median_paired_delta_vs_vanilla": float(np.median(delta)),
-                "wins_vs_vanilla": int(np.count_nonzero(delta > 0)),
+                "paired_reference": "vanilla" if vanilla_rows else "true",
+                "median_paired_delta": float(np.median(delta)),
+                "wins_vs_reference": int(np.count_nonzero(delta > 0)),
                 "position_vanilla_0_true_1": position if np.isfinite(position) else None,
                 "median_tail5_minus_head5": learning,
                 "interpretation": verdict,
@@ -236,7 +279,7 @@ def summarize(grouped, variants: dict[str, list[str]]) -> dict:
             position_text = f"{position:10.2f}" if np.isfinite(position) else f"{'n/a':>10s}"
             print(
                 f"{variant:28s} {value:11.2f} {np.median(delta):+11.2f} "
-                f"{np.count_nonzero(delta > 0):>3d}/5 {position_text} {learning:+11.2f}  {verdict}"
+                f"{np.count_nonzero(delta > 0):>3d}/{len(delta)} {position_text} {learning:+11.2f}  {verdict}"
             )
         ranked = sorted(
             (item for item in candidate_payload if item["position_vanilla_0_true_1"] is not None),
@@ -276,12 +319,16 @@ def plot_curves(grouped, variants: dict[str, list[str]], path: Path) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(6, 2, figsize=(17, 25), squeeze=False)
+    cells = list(variants)
+    rows_needed = (len(cells) + 1) // 2
+    fig, axes = plt.subplots(rows_needed, 2, figsize=(17, 4.2 * rows_needed), squeeze=False)
     candidate_colors = plt.cm.tab10(np.linspace(0.0, 0.9, 8))
-    for index, cell in enumerate(CELLS):
+    for index, cell in enumerate(cells):
         ax = axes[index // 2][index % 2]
         for variant_index, variant in enumerate(variants[cell]):
-            rows = grouped[(cell, variant)]
+            rows = grouped.get((cell, variant)) or []
+            if not rows:
+                continue
             length = min(len(row["means"]) for row in rows)
             stack = np.vstack([row["means"][:length] for row in rows])
             center = np.median(stack, axis=0)
@@ -300,8 +347,14 @@ def plot_curves(grouped, variants: dict[str, list[str]], path: Path) -> None:
         ax.set_ylabel("true return")
         ax.grid(alpha=0.25)
         ax.legend(fontsize=5.8, ncol=2, frameon=False)
-    axes[-1][-1].axis("off")
-    fig.suptitle("Reasonable partial screen: true vs vanilla RLHF vs partial-only (median and IQR over 5 seeds)")
+    for spare in range(len(cells), rows_needed * 2):
+        axes[spare // 2][spare % 2].axis("off")
+    seed_counts = {len(rows) for key, rows in grouped.items() if rows}
+    seed_text = f"{min(seed_counts)} seed" + ("s" if min(seed_counts) != 1 else "")
+    fig.suptitle(
+        "Reasonable partial screen: true vs vanilla RLHF vs partial-only "
+        f"(median and IQR over {seed_text})"
+    )
     fig.tight_layout()
     fig.savefig(path, dpi=170, bbox_inches="tight")
     plt.close(fig)
@@ -313,12 +366,16 @@ def plot_tail5(grouped, variants: dict[str, list[str]], path: Path) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(6, 2, figsize=(17, 25), squeeze=False)
-    for index, cell in enumerate(CELLS):
+    cells = list(variants)
+    rows_needed = (len(cells) + 1) // 2
+    fig, axes = plt.subplots(rows_needed, 2, figsize=(17, 4.2 * rows_needed), squeeze=False)
+    for index, cell in enumerate(cells):
         ax = axes[index // 2][index % 2]
         cell_variants = variants[cell]
         for y, variant in enumerate(cell_variants):
-            values = np.asarray([row["tail5"] for row in grouped[(cell, variant)]])
+            values = np.asarray([row["tail5"] for row in grouped.get((cell, variant)) or []])
+            if values.size == 0:
+                continue
             color = "black" if variant == "true" else "seagreen" if variant == "vanilla" else "tab:orange"
             ax.scatter(values, np.full(values.shape, y), color=color, s=18, alpha=0.75)
             ax.scatter([np.median(values)], [y], color=color, marker="|", s=180, linewidth=2.5)
@@ -327,7 +384,8 @@ def plot_tail5(grouped, variants: dict[str, list[str]], path: Path) -> None:
         ax.set_title(cell)
         ax.set_xlabel("per-seed mean of last 5 true-return checkpoints")
         ax.grid(axis="x", alpha=0.25)
-    axes[-1][-1].axis("off")
+    for spare in range(len(cells), rows_needed * 2):
+        axes[spare // 2][spare % 2].axis("off")
     fig.suptitle("Stable endpoints by paired seed (vertical mark = median)")
     fig.tight_layout()
     fig.savefig(path, dpi=170, bbox_inches="tight")
@@ -342,9 +400,11 @@ def plot_atari_diagnostic(grouped, variants: dict[str, list[str]], path: Path) -
 
     fig, axes = plt.subplots(2, 2, figsize=(15, 10), squeeze=False)
     candidate_colors = plt.cm.tab10(np.linspace(0.0, 0.9, 8))
-    for ax, cell in zip(axes.flat, sorted(ATARI_CELLS)):
+    for ax, cell in zip(axes.flat, [c for c in sorted(ATARI_CELLS) if c in variants]):
         for variant_index, variant in enumerate(variants[cell]):
-            rows = grouped[(cell, variant)]
+            rows = grouped.get((cell, variant)) or []
+            if not rows:
+                continue
             length = min(len(row["det_means"]) for row in rows)
             stack = np.vstack([row["det_means"][:length] for row in rows])
             center = np.median(stack, axis=0)
@@ -374,16 +434,26 @@ def main() -> None:
     # The fast pilot writes logs/fastatari_<cell>_<variant>/; everything after the
     # first underscore is parsed the same way, so only the glob has to change.
     parser.add_argument("--run-prefix", default="reasonable", help="log-directory prefix to read")
+    parser.add_argument("--allow-incomplete", action="store_true",
+                        help="report on the runs that finished instead of exiting when some are missing")
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
     expected, variants = read_expected(Path(args.params))
     runs = load_runs(Path(args.root), args.run_prefix)
-    validate(runs, expected)
+    validate(runs, expected, args.allow_incomplete)
     grouped = group_runs(runs)
+    if args.allow_incomplete:
+        # Report on what is on disk: drop variants with no run at all, and drop
+        # whole cells that have lost their ceiling or their floor.
+        variants = {
+            cell: [v for v in cell_variants if v in ("true", "vanilla") or grouped.get((cell, v))]
+            for cell, cell_variants in variants.items()
+            if grouped.get((cell, "true"))
+        }
     prefix = Path(args.output_prefix)
     write_csv(runs, prefix.with_name(prefix.name + "_runs.csv"))
-    report = summarize(grouped, variants)
+    report = summarize(grouped, variants, args.allow_incomplete)
     report_path = prefix.with_name(prefix.name + "_report.json")
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"wrote {report_path}")
