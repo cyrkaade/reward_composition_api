@@ -17,14 +17,24 @@ from .preferences import (
     train_preference_reward_model,
     validate_preference_reward_model,
 )
-from .wrapper import LearnedRewardRuntime, PreferenceRewardWrapper, reward_model_features
+from .wrapper import (
+    BatchedRewardDummyVecEnv,
+    LearnedRewardRuntime,
+    PreferenceRewardWrapper,
+    preference_reward_wrappers,
+    resolve_torch_device,
+    reward_model_features,
+)
 
 __all__ = [
     "DeltaLoss",
+    "BatchedRewardDummyVecEnv",
     "LearnedRewardRuntime",
     "OutputRegularizationLoss",
     "PairwiseLoss",
     "PreferenceRewardWrapper",
+    "preference_reward_wrappers",
+    "resolve_torch_device",
     "RegularizationLoss",
     "RewardModel",
     "choose_query_pairs",

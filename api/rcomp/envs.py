@@ -49,8 +49,22 @@ def action_for_space(space: spaces.Space, action):
     return np.asarray(action, dtype=getattr(space, "dtype", np.float32)).reshape(space.shape)
 
 
-def make_train_env(env_fn, n_envs: int, monitor_dir: Path, normalize: bool):
-    env = make_vec_env(env_fn, n_envs=n_envs, vec_env_cls=DummyVecEnv, monitor_dir=str(monitor_dir))
+def make_train_env(env_fn, n_envs: int, monitor_dir: Path, normalize: bool, vec_env_cls=None, vec_env_kwargs=None):
+    """Build the training VecEnv.
+
+    ``vec_env_cls`` swaps in a DummyVecEnv subclass -- used to score the learned
+    reward for every sub-env in one batched forward.  It must stay a DummyVecEnv
+    subclass rather than a VecEnvWrapper: SB3's ``sync_envs_normalization`` walks
+    the training and eval env stacks together and asserts they match in shape.
+    """
+
+    env = make_vec_env(
+        env_fn,
+        n_envs=n_envs,
+        vec_env_cls=vec_env_cls or DummyVecEnv,
+        vec_env_kwargs=vec_env_kwargs,
+        monitor_dir=str(monitor_dir),
+    )
     if normalize:
         return VecNormalize(env, norm_obs=True, norm_reward=True)
     return env

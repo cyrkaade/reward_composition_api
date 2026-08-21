@@ -5,6 +5,7 @@ and whether the true reward is cast to float in ``info``."""
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -12,6 +13,8 @@ import gymnasium as gym
 import numpy as np
 import torch as th
 from gymnasium import spaces
+from stable_baselines3.common.vec_env import DummyVecEnv
+from torch.func import functional_call, stack_module_state
 
 from ..envs import action_features
 from ..partials import PartialSpec
@@ -19,6 +22,19 @@ from .model import RewardModel
 
 
 PARTIAL_OBSERVATION_KEY = "_partial_observation"
+
+
+def resolve_torch_device(name: str) -> th.device:
+    """Resolve a config device string to a concrete torch device.
+
+    ``auto`` follows torch availability.  ``cuda`` is taken at face value so a
+    misconfigured job fails at ``.to()`` rather than silently spending hours on
+    the CPU.
+    """
+
+    if name == "auto":
+        return th.device("cuda" if th.cuda.is_available() else "cpu")
+    return th.device(name)
 
 
 def partial_observation_from_info(observation, info: dict, *, consume: bool = False):
@@ -63,6 +79,8 @@ class LearnedRewardRuntime:
     custom_partial: PartialSpec | None = None
     reward_model: RewardModel | None = None
     reward_models: list[RewardModel] | None = None
+    model_device: str = "cpu"
+    model_generation: int = 0
     output_mean: float | None = None
     output_std: float | None = None
     gate_stats: dict | None = None
@@ -119,6 +137,35 @@ class LearnedRewardRuntime:
             scale *= self.target_std / max(self.output_std, 1e-8)
         return scale
 
+    def active_reward_models(self) -> list[RewardModel]:
+        """Ensemble members currently backing the learned reward, or []."""
+        if self.reward_models:
+            return list(self.reward_models)
+        return [self.reward_model] if self.reward_model is not None else []
+
+    def notify_models_changed(self) -> None:
+        """Invalidate any cached view of the ensemble's stacked parameters.
+
+        The training routines mutate the members' weights in place, so a cache
+        keyed on object identity would go stale without ever looking stale.
+        Callers bump this counter instead; policy training bumps it at every
+        entry point, which is sufficient because weights only ever change
+        between policy rounds.
+        """
+
+        self.model_generation += 1
+
+    def compose_reward(self, partial_reward: float, model_reward: float) -> float:
+        if self.composition == "partial":
+            return partial_reward
+        if self.composition == "feedback":
+            return model_reward
+        if self.composition in {"naive", "delta"}:
+            return self.composed_partial_reward(partial_reward) + model_reward
+        if self.composition == "weighted_sum":
+            return self.composed_partial_reward(partial_reward) + self.model_reward_weight() * model_reward
+        raise ValueError(f"Unsupported reward composition: {self.composition}")
+
     def model_features(self, observation, action, partial_reward: float) -> np.ndarray:
         return reward_model_features(
             self.observation_features,
@@ -132,11 +179,16 @@ class LearnedRewardRuntime:
 
 
 class PreferenceRewardWrapper(gym.Wrapper):
-    def __init__(self, env, runtime: LearnedRewardRuntime):
+    def __init__(self, env, runtime: LearnedRewardRuntime, defer_model_reward: bool = False):
         super().__init__(env)
         self.runtime = runtime
         self.partial = runtime.custom_partial.create(runtime.env_id) if runtime.custom_partial else None
         self._last_partial_obs = None
+        # When deferred, this wrapper builds the model input but does not run
+        # the model; BatchedModelRewardWrapper scores every sub-env at once and
+        # writes the composed reward back at the vec level.
+        self.defer_model_reward = bool(defer_model_reward)
+        self.pending_model_features: np.ndarray | None = None
 
     def reset(self, **kwargs):
         observation, info = self.env.reset(**kwargs)
@@ -158,8 +210,9 @@ class PreferenceRewardWrapper(gym.Wrapper):
             return 0.0
 
         model_input = self.runtime.model_features(observation, action, partial_reward)
+        device = resolve_torch_device(self.runtime.model_device)
         with th.no_grad():
-            model_tensor = th.as_tensor(model_input, dtype=th.float32).view(1, -1)
+            model_tensor = th.as_tensor(model_input, dtype=th.float32, device=device).view(1, -1)
             outputs = th.stack([model(model_tensor).reshape(-1)[0] for model in reward_models])
             output = th.mean(outputs)
         return self.runtime.transform_model_output(float(output.item()))
@@ -170,25 +223,15 @@ class PreferenceRewardWrapper(gym.Wrapper):
         if not reward_models:
             return 0.0, 1.0
         model_input = self.runtime.model_features(observation, action, partial_reward)
+        device = resolve_torch_device(self.runtime.model_device)
         with th.no_grad():
-            model_tensor = th.as_tensor(model_input, dtype=th.float32).view(1, -1)
+            model_tensor = th.as_tensor(model_input, dtype=th.float32, device=device).view(1, -1)
             h = th.mean(th.stack([model(model_tensor).reshape(-1)[0] for model in reward_models]))
             g = th.mean(th.stack([model.gate(model_tensor).reshape(-1)[0] for model in reward_models]))
         return self.runtime.transform_model_output(float(h.item())), float(g.item())
 
     def compose_reward(self, partial_reward: float, model_reward: float) -> float:
-        if self.runtime.composition == "partial":
-            return partial_reward
-        if self.runtime.composition == "feedback":
-            return model_reward
-        if self.runtime.composition in {"naive", "delta"}:
-            return self.runtime.composed_partial_reward(partial_reward) + model_reward
-        if self.runtime.composition == "weighted_sum":
-            return (
-                self.runtime.composed_partial_reward(partial_reward)
-                + self.runtime.model_reward_weight() * model_reward
-            )
-        raise ValueError(f"Unsupported reward composition: {self.runtime.composition}")
+        return self.runtime.compose_reward(partial_reward, model_reward)
 
     def step(self, action):
         previous_partial_obs = self._last_partial_obs
@@ -210,6 +253,14 @@ class PreferenceRewardWrapper(gym.Wrapper):
             # dropping partial_alpha whenever the gate was enabled.)
             training_reward = gate * self.runtime.composed_partial_reward(partial_reward) + model_reward
             info["gate"] = gate
+        elif self.defer_model_reward:
+            # Build the features HERE, from this env's genuine post-step
+            # observation. DummyVecEnv auto-resets a finished env and reports
+            # the reset observation, so a vec-level wrapper reading `new_obs`
+            # would score reset frames on every episode boundary.
+            self.pending_model_features = self.runtime.model_features(observation, action, partial_reward)
+            model_reward = 0.0
+            training_reward = 0.0
         else:
             model_reward = self.model_reward(observation, action, partial_reward)
             training_reward = self.compose_reward(partial_reward, model_reward)
@@ -221,3 +272,112 @@ class PreferenceRewardWrapper(gym.Wrapper):
         info["learned_reward"] = training_reward
         self._last_partial_obs = partial_observation
         return observation, training_reward, terminated, truncated, info
+
+
+def preference_reward_wrappers(venv) -> list[PreferenceRewardWrapper]:
+    """The per-env :class:`PreferenceRewardWrapper` behind each sub-env."""
+
+    envs = getattr(venv, "envs", None)
+    if envs is None:
+        raise TypeError("batched reward inference needs a DummyVecEnv-style venv exposing .envs")
+    wrappers = []
+    for index, env in enumerate(envs):
+        current = env
+        while current is not None and not isinstance(current, PreferenceRewardWrapper):
+            current = getattr(current, "env", None)
+        if current is None:
+            raise TypeError(f"sub-env {index} is not wrapped in PreferenceRewardWrapper")
+        wrappers.append(current)
+    return wrappers
+
+
+class BatchedRewardDummyVecEnv(DummyVecEnv):
+    """DummyVecEnv that scores every sub-env in ONE reward-model forward.
+
+    Each :class:`PreferenceRewardWrapper` below runs in deferred mode: it builds
+    its own model input from its own post-step observation and stashes it, but
+    leaves the reward at zero.  This class stacks those inputs, evaluates the
+    ensemble once, and writes the composed reward back.  Only the batch
+    dimension changes, so the rewards PPO sees match the per-env path to float32
+    rounding (a batched GEMM accumulates in a different order than a batch-1
+    matvec; the arithmetic is the same).
+
+    Two structural notes:
+
+    * It **subclasses** DummyVecEnv rather than wrapping it.  A VecEnvWrapper
+      would deepen the training env's stack, and SB3's
+      ``sync_envs_normalization`` walks the training and eval stacks in lockstep
+      and asserts they have the same shape.
+
+    * Each sub-env's ``Monitor`` sits inside the vec env, so it records the
+      deferred placeholder (0.0) rather than the composed training reward:
+      ``rollout/ep_rew_mean`` and ``monitor/*.csv`` are not meaningful under this
+      flag.  Nothing in this project reads them -- evaluation goes through
+      ``make_raw_env`` on the true reward, and the analyzers read
+      ``metadata.json`` and ``eval/evaluations.npz``.  The composed reward is
+      still published per step in ``info["learned_reward"]``.
+    """
+
+    def __init__(self, env_fns, runtime: LearnedRewardRuntime, batch_ensemble: bool = False):
+        super().__init__(env_fns)
+        self.runtime = runtime
+        self.batch_ensemble = bool(batch_ensemble)
+        self.sub_wrappers = preference_reward_wrappers(self)
+        self._stacked_generation = -1
+        self._stacked: tuple | None = None
+
+    def reset(self):
+        for wrapper in self.sub_wrappers:
+            wrapper.pending_model_features = None
+        return super().reset()
+
+    def step_wait(self):
+        observations, rewards, dones, infos = super().step_wait()
+        features = []
+        for index, wrapper in enumerate(self.sub_wrappers):
+            pending = wrapper.pending_model_features
+            if pending is None:
+                raise RuntimeError(
+                    f"sub-env {index} produced no reward-model features; BatchedRewardDummyVecEnv "
+                    "requires PreferenceRewardWrapper(..., defer_model_reward=True)"
+                )
+            features.append(pending)
+            wrapper.pending_model_features = None
+
+        model_rewards = self.model_rewards(np.stack(features))
+        for index, info in enumerate(infos):
+            model_reward = model_rewards[index]
+            composed = self.runtime.compose_reward(float(info.get("partial_reward", 0.0)), model_reward)
+            info["model_reward"] = model_reward
+            info["learned_reward"] = composed
+            rewards[index] = composed
+        return observations, rewards, dones, infos
+
+    def model_rewards(self, features: np.ndarray) -> list[float]:
+        reward_models = self.runtime.active_reward_models()
+        if not reward_models:
+            return [0.0] * len(features)
+        device = resolve_torch_device(self.runtime.model_device)
+        with th.no_grad():
+            tensor = th.as_tensor(features, dtype=th.float32, device=device)
+            if self.batch_ensemble and len(reward_models) > 1:
+                outputs = self.stacked_outputs(reward_models, tensor)
+            else:
+                outputs = th.stack([model(tensor).reshape(-1) for model in reward_models])
+            means = th.mean(outputs, dim=0).cpu().numpy()
+        return [self.runtime.transform_model_output(float(value)) for value in means]
+
+    def stacked_outputs(self, reward_models: list[RewardModel], tensor: th.Tensor) -> th.Tensor:
+        """One vmapped forward over stacked member parameters."""
+        if self._stacked is None or self._stacked_generation != self.runtime.model_generation:
+            params, buffers = stack_module_state(reward_models)
+            base = deepcopy(reward_models[0]).to("meta")
+            self._stacked = (base, params, buffers)
+            self._stacked_generation = self.runtime.model_generation
+        base, params, buffers = self._stacked
+
+        def call(member_params, member_buffers, batch):
+            return functional_call(base, (member_params, member_buffers), (batch,))
+
+        stacked = th.vmap(call, in_dims=(0, 0, None))(params, buffers, tensor)
+        return stacked.reshape(len(reward_models), -1)

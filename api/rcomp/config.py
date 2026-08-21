@@ -146,6 +146,24 @@ class ExperimentConfig:
     batchnorm_model_reward: bool = _f(False, "Mini-batch normalize the model output (delta) inside the loss and at inference (batch stats in training, running stats at eval)")
     tanh_model_reward: bool = _f(False, "Bound the reward model's per-state output to [-1,1] with tanh INSIDE the model, as PEBBLE/B-Pref do (model_reward_min/max only clip afterwards in the wrapper and do not shape the Bradley-Terry loss)")
     tanh_scale: float = _f(1.0, "Divide the pre-activation value by this before tanh, i.e. tanh(x/scale): the hard [-1,1] bound is unchanged but the near-linear region widens and saturation gradients vanish more slowly. 1.0 reproduces tanh(x) exactly; values != 1 require --tanh-model-reward")
+    reward_model_device: str = _f(
+        "cpu",
+        "Torch device for the preference reward model, independent of --device (which selects the PPO device). "
+        "'cpu' reproduces historical behavior exactly. 'cuda' moves the reward model -- notably the Atari pixel CNN -- "
+        "onto the GPU; the arithmetic is the same but low-order float rounding differs, so seeds do not reproduce CPU runs",
+        choices=DEVICES,
+    )
+    batch_env_reward_inference: bool = _f(
+        False,
+        "Score every vectorized env in ONE reward-model forward per step instead of one forward per env. "
+        "The features are still built by each sub-env wrapper from its own post-step observation, so only the "
+        "batch dimension changes; on a fixed device the composed rewards are identical",
+    )
+    batch_ensemble_reward_inference: bool = _f(
+        False,
+        "Evaluate all reward-model ensemble members in a single vmapped forward instead of one forward per member. "
+        "Requires --batch-env-reward-inference; incompatible with --batchnorm-model-reward and --gate-partial",
+    )
     gate_partial: bool = _f(False, "Learn a per-state gate g(s,a) in [0,1] so the composed reward is g*partial + delta (the model decides how much to trust the partial per state)")
     gate_holdout: bool = _f(False, "Train the naive frozen-trunk gate on held-out preferences with early stopping, instead of the pairs the reward model was already fit on")
     gate_lr: float | None = _f(None, "Learning rate for the gate head (reward_model_lr when omitted); lower values avoid saturating the sigmoid")
@@ -458,6 +476,23 @@ def _validate_experiment(config: ExperimentConfig) -> None:
         raise ConfigError("tanh_scale must be greater than zero")
     if config.tanh_scale != 1.0 and not config.tanh_model_reward:
         raise ConfigError("tanh_scale rescales the tanh output bound and requires --tanh-model-reward")
+    if config.reward_model_device not in DEVICES:
+        raise ConfigError(
+            f"Unsupported reward_model_device '{config.reward_model_device}'. Supported devices: {', '.join(DEVICES)}"
+        )
+    if config.batch_env_reward_inference and config.mode not in PREFERENCE_MODES:
+        raise ConfigError("batch_env_reward_inference only affects preference modes, which call the reward model")
+    if config.batch_env_reward_inference and config.gate_partial:
+        raise ConfigError(
+            "batch_env_reward_inference does not implement the per-state gate path; run the gate without it"
+        )
+    if config.batch_ensemble_reward_inference and not config.batch_env_reward_inference:
+        raise ConfigError("batch_ensemble_reward_inference requires --batch-env-reward-inference")
+    if config.batch_ensemble_reward_inference and config.batchnorm_model_reward:
+        raise ConfigError(
+            "batch_ensemble_reward_inference vmaps over stacked member parameters, which cannot share "
+            "the OutputBatchNorm running buffers; drop --batchnorm-model-reward"
+        )
     if config.round0_collection_timesteps is not None and config.round0_collection_timesteps <= 0:
         raise ConfigError("round0_collection_timesteps must be greater than zero")
     if spec.presets is not None and config.preset not in spec.presets:

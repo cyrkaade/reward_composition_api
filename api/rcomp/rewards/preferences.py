@@ -27,11 +27,30 @@ from .model import (
 PIXEL_SAFE_BATCH_SIZE = 16
 
 
-def trajectories_to_tensor(trajectories, convert_traj):
+def model_device(model) -> th.device:
+    """Device the reward model lives on (the first member, for an ensemble).
+
+    Every member is created on the same device by ``make_reward_models``, so the
+    first one speaks for the ensemble. Tensor builders take this so inputs are
+    materialized straight onto the model's device instead of being copied.
+    """
+
+    if isinstance(model, (list, tuple)):
+        model = model[0]
+    parameters = getattr(model, "parameters", None)
+    if parameters is None:
+        # Test doubles and hand-written scorers are not nn.Modules; CPU tensors
+        # are what they expect, and what the historical code always built.
+        return th.device("cpu")
+    return next(parameters(), th.empty(0)).device
+
+
+def trajectories_to_tensor(trajectories, convert_traj, device=None):
     """Stack converted trajectories without constructing nested Python floats."""
 
     converted = [np.asarray(convert_traj(trajectory), dtype=np.float32) for trajectory in trajectories]
-    return th.from_numpy(np.stack(converted, axis=0))
+    tensor = th.from_numpy(np.stack(converted, axis=0))
+    return tensor if device is None else tensor.to(device)
 
 
 def model_fragment_returns(models, fragments, convert_traj, batch_size: int = PIXEL_SAFE_BATCH_SIZE):
@@ -40,11 +59,12 @@ def model_fragment_returns(models, fragments, convert_traj, batch_size: int = PI
     This is numerically equivalent to one giant forward pass for the default
     models, but makes stacked-pixel active querying practical.
     """
+    device = model_device(models)
 
     returns = [[] for _ in models]
     with th.no_grad():
         for start in range(0, len(fragments), batch_size):
-            tensor = trajectories_to_tensor(fragments[start : start + batch_size], convert_traj)
+            tensor = trajectories_to_tensor(fragments[start : start + batch_size], convert_traj, device=device)
             for index, model in enumerate(models):
                 values = th.sum(model(tensor), dim=[1, 2]).detach().cpu().numpy().tolist()
                 returns[index].extend(values)
@@ -434,23 +454,33 @@ def build_holdout_preferences(
     return rate_pairs_from_true_reward(random_query_pairs(fragments, pair_count, rng=rng))
 
 
-def rated_pairs_to_tensors(rated_pairs: list[Preference], convert_traj: Callable[[Trajectory], list[list[float]]]):
-    t1s = trajectories_to_tensor([pair.t1 for pair in rated_pairs], convert_traj)
-    t2s = trajectories_to_tensor([pair.t2 for pair in rated_pairs], convert_traj)
+def rated_pairs_to_tensors(
+    rated_pairs: list[Preference],
+    convert_traj: Callable[[Trajectory], list[list[float]]],
+    device=None,
+):
+    t1s = trajectories_to_tensor([pair.t1 for pair in rated_pairs], convert_traj, device=device)
+    t2s = trajectories_to_tensor([pair.t2 for pair in rated_pairs], convert_traj, device=device)
     return (
         t1s,
         t2s,
-        th.as_tensor([pair.rating for pair in rated_pairs], dtype=th.float32),
+        th.as_tensor([pair.rating for pair in rated_pairs], dtype=th.float32, device=device),
     )
 
 
-def partial_reward_tensor(rated_pairs: list[Preference], side: str, partial_mean: float = 0.0, partial_std: float = 1.0):
+def partial_reward_tensor(
+    rated_pairs: list[Preference],
+    side: str,
+    partial_mean: float = 0.0,
+    partial_std: float = 1.0,
+    device=None,
+):
     trajectories = [pair.t1 if side == "t1" else pair.t2 for pair in rated_pairs]
     rewards = [
         [[(state["partial_rew"] - partial_mean) / max(partial_std, 1e-8)] for state in trajectory.states]
         for trajectory in trajectories
     ]
-    return th.as_tensor(rewards, dtype=th.float32)
+    return th.as_tensor(rewards, dtype=th.float32, device=device)
 
 
 def reward_model_io_stats(
@@ -458,13 +488,14 @@ def reward_model_io_stats(
     trajectories: list[Trajectory],
     convert_traj: Callable[[Trajectory], list[list[float]]],
 ):
+    device = model_device(reward_model)
     if not trajectories:
         return None, None
     reward_models = reward_model if isinstance(reward_model, list) else [reward_model]
     outputs = []
     with th.no_grad():
         for start in range(0, len(trajectories), PIXEL_SAFE_BATCH_SIZE):
-            tensors = trajectories_to_tensor(trajectories[start : start + PIXEL_SAFE_BATCH_SIZE], convert_traj)
+            tensors = trajectories_to_tensor(trajectories[start : start + PIXEL_SAFE_BATCH_SIZE], convert_traj, device=device)
             batch = th.stack([model(tensors).reshape(-1) for model in reward_models]).mean(dim=0)
             outputs.append(batch.cpu())
     values = th.cat(outputs)
@@ -518,15 +549,16 @@ def reward_model_diagnostics(
       trains on, so you can see whether the composition explains preferences
       better than the learned model on its own.
     """
+    device = model_device(reward_model)
     models = reward_model if isinstance(reward_model, list) else [reward_model]
     if not pairs or not models:
         return None
 
     loss_fn = PairwiseLoss()
     with th.no_grad():
-        x1, x2, ratings = rated_pairs_to_tensors(pairs, convert_traj)
-        p1 = partial_reward_tensor(pairs, "t1", partial_mean, partial_std) * partial_alpha
-        p2 = partial_reward_tensor(pairs, "t2", partial_mean, partial_std) * partial_alpha
+        x1, x2, ratings = rated_pairs_to_tensors(pairs, convert_traj, device=device)
+        p1 = partial_reward_tensor(pairs, "t1", partial_mean, partial_std, device=device) * partial_alpha
+        p2 = partial_reward_tensor(pairs, "t2", partial_mean, partial_std, device=device) * partial_alpha
 
         def score(a, b):
             y1 = th.stack([m(a) for m in models]).mean(dim=0)
@@ -795,6 +827,7 @@ def pretrain_reward_model_bt(
     free - the partial is a known function - so this does not consume the human
     query budget.
     """
+    device = model_device(reward_model)
     fragments = fragment_trajectories(trajectories, fragment_length)
     if loss_reduction not in ("sum", "mean"):
         raise ValueError("loss_reduction must be 'sum' or 'mean'")
@@ -831,13 +864,13 @@ def pretrain_reward_model_bt(
         if not val_pairs:
             return 0.0
         with th.no_grad():
-            x1, x2, ratings = rated_pairs_to_tensors(val_pairs, convert_traj)
+            x1, x2, ratings = rated_pairs_to_tensors(val_pairs, convert_traj, device=device)
             return float(loss_fn(reward_model(x1), reward_model(x2), ratings).mean().item())
 
     for epoch in range(epochs):
         reward_model.train()
         random.shuffle(train_pairs)
-        x1_all, x2_all, ratings_all = rated_pairs_to_tensors(train_pairs, convert_traj)
+        x1_all, x2_all, ratings_all = rated_pairs_to_tensors(train_pairs, convert_traj, device=device)
         running_loss, batches = 0.0, 0
         for start in range(0, len(train_pairs), batch_size):
             stop = min(start + batch_size, len(train_pairs))
@@ -900,17 +933,18 @@ def _preference_training_accuracy(
     contributes 0.5). This keeps the statistic meaningful for every supported
     ``Preference.rating`` without changing the hard-label B-Pref case.
     """
+    device = model_device(reward_model)
     if not train_pairs:
         return 0.0
     correctness_batches = []
     with th.no_grad():
         for start in range(0, len(train_pairs), PIXEL_SAFE_BATCH_SIZE):
             batch_pairs = train_pairs[start : start + PIXEL_SAFE_BATCH_SIZE]
-            x1, x2, ratings = rated_pairs_to_tensors(batch_pairs, convert_traj)
+            x1, x2, ratings = rated_pairs_to_tensors(batch_pairs, convert_traj, device=device)
             score1, score2 = reward_model(x1), reward_model(x2)
             if use_delta_loss:
-                partial1 = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
-                partial2 = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+                partial1 = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std, device=device)
+                partial2 = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std, device=device)
                 if reward_model.gate_head is not None:
                     score1 = score1 + reward_model.gate(x1) * partial1 * partial_alpha
                     score2 = score2 + reward_model.gate(x2) * partial2 * partial_alpha
@@ -949,6 +983,7 @@ def train_preference_reward_model(
     fixed_epochs_without_validation: bool = False,
     train_accuracy_stop: float | None = None,
 ) -> dict | None:
+    device = model_device(reward_model)
     if not train_pairs:
         return None
     if loss_reduction not in ("sum", "mean"):
@@ -984,7 +1019,7 @@ def train_preference_reward_model(
         for batch_start in range(0, len(train_pairs), batch_size):
             batch_end = min(batch_start + batch_size, len(train_pairs))
             batch_pairs = train_pairs[batch_start:batch_end]
-            x1, x2, rating_batch = rated_pairs_to_tensors(batch_pairs, convert_traj)
+            x1, x2, rating_batch = rated_pairs_to_tensors(batch_pairs, convert_traj, device=device)
             y1 = reward_model(x1)
             y2 = reward_model(x2)
 
@@ -992,8 +1027,8 @@ def train_preference_reward_model(
                 # per-state gate: R_hat = h(s,a) + g(s,a) * alpha * partial(s,a), g in [0,1]
                 g1 = reward_model.gate(x1)
                 g2 = reward_model.gate(x2)
-                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std) * partial_alpha
-                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std) * partial_alpha
+                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std, device=device) * partial_alpha
+                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std, device=device) * partial_alpha
                 loss = gate_loss(y1 + g1 * t1_partial, y2 + g2 * t2_partial, rating_batch)
                 if gate_prior_penalty > 0:
                     loss = loss + gate_prior_penalty * (
@@ -1001,8 +1036,8 @@ def train_preference_reward_model(
                     )
             elif use_delta_loss:
                 alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
-                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
-                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std, device=device)
+                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std, device=device)
                 loss = preference_loss(y1, y2, t1_partial, t2_partial, rating_batch, alpha)
             else:
                 loss = preference_loss(y1, y2, rating_batch)
@@ -1152,6 +1187,7 @@ def train_gate_head(
     prior_penalty pulls g toward 1 (= use the partial fully, the naive baseline),
     so shrinking the partial has to be paid for with preference evidence.
     """
+    device = model_device(reward_model)
     if holdout and len(val_pairs) >= 4:
         shuffled = list(val_pairs)
         random.shuffle(shuffled)
@@ -1177,7 +1213,7 @@ def train_gate_head(
 
     for epoch in range(epochs):
         random.shuffle(fit_pairs)
-        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(fit_pairs, convert_traj)
+        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(fit_pairs, convert_traj, device=device)
         running_loss, batches = 0.0, 0
         for batch_start in range(0, len(fit_pairs), batch_size):
             batch_end = min(batch_start + batch_size, len(fit_pairs))
@@ -1186,8 +1222,8 @@ def train_gate_head(
             with th.no_grad():
                 h1, h2 = reward_model(x1), reward_model(x2)  # frozen r_pred
             g1, g2 = reward_model.gate(x1), reward_model.gate(x2)  # grads only into gate_head
-            t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std) * partial_alpha
-            t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std) * partial_alpha
+            t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std, device=device) * partial_alpha
+            t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std, device=device) * partial_alpha
             loss = loss_fn(h1 + g1 * t1_partial, h2 + g2 * t2_partial, ratings[batch_start:batch_end])
             total_loss = loss.sum()
             if prior_penalty > 0:
@@ -1225,12 +1261,13 @@ def train_gate_head(
 
 
 def _gate_validation_loss(reward_model, pairs, convert_traj, loss_fn, partial_mean, partial_std, partial_alpha):
+    device = model_device(reward_model)
     with th.no_grad():
-        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(pairs, convert_traj)
+        t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(pairs, convert_traj, device=device)
         h1, h2 = reward_model(t1_tensor), reward_model(t2_tensor)
         g1, g2 = reward_model.gate(t1_tensor), reward_model.gate(t2_tensor)
-        t1_partial = partial_reward_tensor(pairs, "t1", partial_mean, partial_std) * partial_alpha
-        t2_partial = partial_reward_tensor(pairs, "t2", partial_mean, partial_std) * partial_alpha
+        t1_partial = partial_reward_tensor(pairs, "t1", partial_mean, partial_std, device=device) * partial_alpha
+        t2_partial = partial_reward_tensor(pairs, "t2", partial_mean, partial_std, device=device) * partial_alpha
         return float(loss_fn(h1 + g1 * t1_partial, h2 + g2 * t2_partial, ratings).mean().item())
 
 
@@ -1359,25 +1396,26 @@ def validate_preference_reward_model(
     partial_std: float = 1.0,
     partial_alpha: float = 1.0,
 ) -> float:
+    device = model_device(reward_model)
     if not val_pairs:
         return 0.0
     losses = []
     with th.no_grad():
         for start in range(0, len(val_pairs), PIXEL_SAFE_BATCH_SIZE):
             batch_pairs = val_pairs[start : start + PIXEL_SAFE_BATCH_SIZE]
-            t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(batch_pairs, convert_traj)
+            t1_tensor, t2_tensor, ratings = rated_pairs_to_tensors(batch_pairs, convert_traj, device=device)
             y1 = reward_model(t1_tensor)
             y2 = reward_model(t2_tensor)
             if use_delta_loss and reward_model.gate_head is not None:
                 g1 = reward_model.gate(t1_tensor)
                 g2 = reward_model.gate(t2_tensor)
-                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
-                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std, device=device)
+                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std, device=device)
                 batch_loss = PairwiseLoss()(y1 + g1 * t1_partial, y2 + g2 * t2_partial, ratings)
             elif use_delta_loss:
                 alpha = reward_model.alpha if reward_model.alpha is not None else partial_alpha
-                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std)
-                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std)
+                t1_partial = partial_reward_tensor(batch_pairs, "t1", partial_mean, partial_std, device=device)
+                t2_partial = partial_reward_tensor(batch_pairs, "t2", partial_mean, partial_std, device=device)
                 batch_loss = preference_loss(y1, y2, t1_partial, t2_partial, ratings, alpha)
             else:
                 batch_loss = preference_loss(y1, y2, ratings)

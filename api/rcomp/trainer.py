@@ -49,7 +49,12 @@ from .rewards.preferences import (
     train_preference_reward_ensemble,
     train_preference_reward_model,
 )
-from .rewards.wrapper import LearnedRewardRuntime, PreferenceRewardWrapper
+from .rewards.wrapper import (
+    BatchedRewardDummyVecEnv,
+    LearnedRewardRuntime,
+    PreferenceRewardWrapper,
+    resolve_torch_device,
+)
 from .suites import Suite, get_suite
 
 
@@ -180,6 +185,9 @@ class RlhfTrainer:
 
     def train_initial_policy(self) -> None:
         config = self.config
+        # Reward-model weights only ever change between policy rounds, so
+        # refreshing here covers every mutation without tracking each one.
+        self.runtime.notify_models_changed()
         if config.initial_timesteps:
             print(f"initial PPO training on {config.mode} reward for {config.initial_timesteps} timesteps")
             learn_policy(
@@ -641,6 +649,7 @@ class RlhfTrainer:
 
     def train_policy_round(self, round_index: int) -> None:
         config = self.config
+        self.runtime.notify_models_changed()
         policy_steps = self.policy_steps_by_round[round_index]
         print(f"training PPO on {config.mode} reward for {policy_steps} timesteps")
         learn_policy(
@@ -654,6 +663,7 @@ class RlhfTrainer:
 
     def train_final_policy(self) -> None:
         config = self.config
+        self.runtime.notify_models_changed()
         if config.final_policy_timesteps:
             print(f"final PPO training on {config.mode} reward for {config.final_policy_timesteps} timesteps")
             learn_policy(
@@ -705,8 +715,10 @@ def make_reward_models(
     ]
     # Start in eval mode so single-step inference uses running stats before the
     # first reward-model training round (no-op when batchnorm is disabled).
+    device = resolve_torch_device(config.reward_model_device)
     for model in models:
         model.eval()
+        model.to(device)
     return models[0] if len(models) == 1 else models
 
 
@@ -765,12 +777,15 @@ class ExperimentRunner:
             custom_partial=self.custom_partial,
             reset_info=dict(self.suite.wrapper_reset_info),
             cast_true_reward=self.suite.cast_true_reward_info,
+            model_device=self.config.reward_model_device,
             **kwargs,
         )
 
-    def build_envs_and_callbacks(self, env_fn, run_dir: Path, normalize: bool):
+    def build_envs_and_callbacks(self, env_fn, run_dir: Path, normalize: bool, vec_env_cls=None, vec_env_kwargs=None):
         config = self.config
-        train_env = make_train_env(env_fn, config.n_envs, run_dir / "monitor", normalize)
+        train_env = make_train_env(
+            env_fn, config.n_envs, run_dir / "monitor", normalize, vec_env_cls, vec_env_kwargs
+        )
         eval_env = make_eval_env(self.suite.make_raw_env, config.env_id, train_env)
 
         best_callbacks: list[BaseCallback] = []
@@ -876,10 +891,19 @@ class ExperimentRunner:
             gate_partial=config.gate_partial,
             include_partial_feature=include_partial_feature(config),
         )
+        batched = config.batch_env_reward_inference
         train_env, eval_env, callbacks = self.build_envs_and_callbacks(
-            lambda: PreferenceRewardWrapper(self.suite.make_raw_env(config.env_id), runtime),
+            lambda: PreferenceRewardWrapper(
+                self.suite.make_raw_env(config.env_id), runtime, defer_model_reward=batched
+            ),
             run_dir,
             normalize,
+            vec_env_cls=BatchedRewardDummyVecEnv if batched else None,
+            vec_env_kwargs=(
+                {"runtime": runtime, "batch_ensemble": config.batch_ensemble_reward_inference}
+                if batched
+                else None
+            ),
         )
         model = PPO(env=train_env, verbose=1, seed=config.seed, device=config.device, **hyperparams)
 
@@ -929,7 +953,12 @@ class ExperimentRunner:
             if reward_models:
                 # small MLPs; keeping them makes any later offline analysis of the
                 # learned reward possible without re-running training
-                th.save([m.state_dict() for m in reward_models], run_dir / "reward_model.pt")
+                # Save on CPU so the checkpoint loads anywhere, whatever
+                # --reward-model-device the run used.
+                th.save(
+                    [{k: v.detach().cpu() for k, v in m.state_dict().items()} for m in reward_models],
+                    run_dir / "reward_model.pt",
+                )
         vecnormalize_path = None
         if isinstance(train_env, VecNormalize):
             train_env.save(paths.vecnormalize)
@@ -1196,6 +1225,9 @@ class ExperimentRunner:
             "partial_alpha_penalty": config.partial_alpha_penalty if config.learn_partial_alpha else None,
             "partial_prediction_coef": config.partial_prediction_coef if is_preference else None,
             "batchnorm_model_reward": config.batchnorm_model_reward if is_preference else None,
+            "reward_model_device": config.reward_model_device if is_preference else None,
+            "batch_env_reward_inference": config.batch_env_reward_inference if is_preference else None,
+            "batch_ensemble_reward_inference": config.batch_ensemble_reward_inference if is_preference else None,
             "partial_reference": config.partial,
             "best_logged_true_reward": best_logged_reward,
             "best_logged_timestep": best_logged_timestep,
