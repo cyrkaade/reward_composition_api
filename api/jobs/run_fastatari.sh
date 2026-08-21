@@ -131,6 +131,7 @@ RM=(
   --reward-output-l1 0.001
   --ensemble-training full
   --ensemble-bootstrap
+  --holdout-pairs 100
   --reward-model-train-accuracy-stop 0.97
   --round0-data-protocol separate
   --dedicated-query-rng

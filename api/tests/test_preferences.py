@@ -59,11 +59,13 @@ def test_fragment_trajectories_keeps_exact_length_fragments():
 def test_rate_pairs_from_true_reward():
     high = make_trajectory(2, reward=5.0)
     low = make_trajectory(2, reward=1.0)
+    tied = make_trajectory(2, reward=5.0)
 
-    rated = rate_pairs_from_true_reward([(high, low), (low, high)])
+    rated = rate_pairs_from_true_reward([(high, low), (low, high), (high, tied)])
 
     assert rated[0].rating == 1.0
     assert rated[1].rating == 0.0
+    assert rated[2].rating == 0.5
 
 
 def test_random_query_pairs_respects_count():

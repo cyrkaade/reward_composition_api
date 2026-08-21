@@ -84,9 +84,9 @@ class AtariResizeObservation(gym.ObservationWrapper):
     """Resize an ALE grayscale frame without requiring OpenCV.
 
     Gymnasium's :class:`AtariPreprocessing` has an undeclared runtime dependency
-    on OpenCV.  Pillow is already a project dependency and gives us the only
-    part needed here: deterministic 84x84 grayscale resizing.  Action repeat,
-    sticky actions, FIRE handling, and life handling remain unchanged.
+    on OpenCV.  Pillow is already a project dependency and supplies deterministic
+    84x84 grayscale resizing; action repeat and two-frame flicker max-pooling are
+    applied before this wrapper.
     """
 
     def __init__(self, env, screen_size: int = 84):
@@ -418,11 +418,17 @@ class AtariSuite(Suite):
         th.manual_seed(config.seed)
 
     def make_raw_env(self, env_id: str) -> gym.Env:
+        from stable_baselines3.common.atari_wrappers import MaxAndSkipEnv
+
         register_atari_envs()
         # Policy and reward-model observations are pixels.  RAM is sampled from
         # the exact same final ALE state by the outer wrapper and is used only by
         # hand-written partials.
-        env = gym.make(env_id, obs_type="grayscale", frameskip=4, repeat_action_probability=0.25)
+        # MaxAndSkipEnv owns the four-step action repeat so it can retain and
+        # pixelwise-max the final two raw frames.  Keeping ALE's own frameskip at
+        # one avoids accidentally repeating every chosen action 4 * 4 times.
+        env = gym.make(env_id, obs_type="grayscale", frameskip=1, repeat_action_probability=0.25)
+        env = MaxAndSkipEnv(env, skip=4)
         env = AtariResizeObservation(env, screen_size=84)
         env = AtariFireResetEnv(env)
         env = gym.wrappers.FrameStackObservation(env, stack_size=4, padding_type="reset")
@@ -478,6 +484,7 @@ class AtariSuite(Suite):
             "screen_size": 84,
             "frame_stack": 4,
             "frameskip": 4,
+            "max_pool_last_two_frames": True,
             "repeat_action_probability": 0.25,
             "fire_reset": True,
             "auto_fire_after_life_loss": True,

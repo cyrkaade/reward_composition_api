@@ -52,9 +52,14 @@ def model_fragment_returns(models, fragments, convert_traj, batch_size: int = PI
 
 
 def rate_pairs_from_true_reward(pairs: list[tuple[Trajectory, Trajectory]]) -> list[Preference]:
+    """Rate oracle comparisons, preserving equal-return pairs as true ties."""
+
     rated_pairs = []
     for t1, t2 in pairs:
-        rated_pairs.append(Preference(t1, t2, float(t1.get_summed_reward() > t2.get_summed_reward())))
+        return1 = t1.get_summed_reward()
+        return2 = t2.get_summed_reward()
+        rating = 0.5 if return1 == return2 else float(return1 > return2)
+        rated_pairs.append(Preference(t1, t2, rating))
     return rated_pairs
 
 

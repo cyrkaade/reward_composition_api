@@ -10,6 +10,7 @@ from gymnasium import spaces
 from rcomp.partials import PartialRegistry, PartialSpec, load_partial_reference
 from rcomp.rewards.model import PixelRewardModel
 from rcomp.rewards.wrapper import LearnedRewardRuntime, PreferenceRewardWrapper
+from rcomp.suites import AtariSuite
 
 
 class _RamInfoPixelEnv(gym.Env):
@@ -37,6 +38,66 @@ class _RecorderPartial:
     def step(self, obs, action, next_obs, true_reward, terminated, truncated, info):
         self.calls.append((np.asarray(obs).copy(), np.asarray(next_obs).copy()))
         return 1.0
+
+
+class _FakeAle:
+    def __init__(self, env):
+        self.env = env
+
+    def getRAM(self):
+        ram = np.zeros(128, dtype=np.uint8)
+        ram[0] = self.env.step_calls
+        return ram
+
+
+class _FlickeringAtariEnv(gym.Env):
+    observation_space = spaces.Box(0, 255, shape=(84, 84), dtype=np.uint8)
+    action_space = spaces.Discrete(3)
+
+    def __init__(self):
+        self.step_calls = 0
+        self.ale = _FakeAle(self)
+
+    def get_action_meanings(self):
+        return ["NOOP", "LEFT", "RIGHT"]
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.step_calls = 0
+        return np.zeros(self.observation_space.shape, dtype=np.uint8), {"lives": 3}
+
+    def step(self, action):
+        self.step_calls += 1
+        # MaxAndSkipEnv must return max(frame 3=200, frame 4=30), not merely
+        # ALE's final frame.  Uniform frames keep the resize assertion exact.
+        value = (10, 20, 200, 30)[self.step_calls - 1]
+        observation = np.full(self.observation_space.shape, value, dtype=np.uint8)
+        return observation, 1.0, False, False, {"lives": 3}
+
+
+def test_atari_suite_max_pools_last_two_frames_without_double_skip(monkeypatch):
+    base_env = _FlickeringAtariEnv()
+    make_kwargs = {}
+
+    def fake_make(env_id, **kwargs):
+        make_kwargs.update(kwargs)
+        return base_env
+
+    monkeypatch.setattr("rcomp.suites.register_atari_envs", lambda: None)
+    monkeypatch.setattr("rcomp.suites.gym.make", fake_make)
+
+    env = AtariSuite().make_raw_env("ALE/Fake-v5")
+    observation, _ = env.reset(seed=0)
+    observation, reward, terminated, truncated, info = env.step(1)
+
+    assert make_kwargs["frameskip"] == 1
+    assert make_kwargs["repeat_action_probability"] == 0.25
+    assert base_env.step_calls == 4
+    assert reward == 4.0
+    assert not terminated and not truncated
+    assert observation.shape == (4, 84, 84)
+    assert np.all(np.asarray(observation)[-1] == 200)
+    assert info["_partial_observation"][0] == 4
 
 
 def test_preference_wrapper_routes_ram_only_to_partial_and_pixels_to_policy():

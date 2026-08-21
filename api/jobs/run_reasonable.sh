@@ -31,6 +31,7 @@ fi
 HELP_TEXT="$(python -m rcomp train --help)"
 for FLAG in --policy-learning-kwargs --preset --ensemble-training --round0-data-protocol \
             --tanh-model-reward --dedicated-query-rng --ensemble-bootstrap \
+            --holdout-pairs \
             --reward-model-train-accuracy-stop --final-policy --n-envs \
             --round0-collection-timesteps --tanh-scale \
             --active-query-strategy --active-candidate-protocol; do
@@ -152,6 +153,7 @@ RM=(
   --reward-output-l1 0.001
   --ensemble-training full
   --ensemble-bootstrap
+  --holdout-pairs 100
   --reward-model-train-accuracy-stop 0.97
   --round0-data-protocol separate
   --dedicated-query-rng
