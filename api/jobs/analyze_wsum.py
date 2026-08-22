@@ -54,11 +54,16 @@ BASE_STYLE = {
 }
 
 
-def load_runs(root: Path):
-    """run dirs are logs/wsum_<cell>_<arm>/wsum_<cell>_<arm>_seed<n>/"""
+def load_runs(root: Path, prefix: str = "wsum"):
+    """run dirs are logs/<prefix>_<cell>_<arm>/<prefix>_<cell>_<arm>_seed<n>/
+
+    The Atari half of the grid was submitted under the `wsuma` prefix, so the
+    prefix is a parameter rather than a literal.  Globbing "wsum_*" would not
+    pick those up: the fifth character is 'a', not '_'.
+    """
     runs = []
-    for meta_path in sorted(root.glob("wsum_*/*/metadata.json")):
-        cell_arm = meta_path.parent.parent.name[len("wsum_"):]
+    for meta_path in sorted(root.glob(f"{prefix}_*/*/metadata.json")):
+        cell_arm = meta_path.parent.parent.name[len(prefix) + 1:]
         try:
             meta = json.loads(meta_path.read_text())
         except Exception:
@@ -134,6 +139,11 @@ def main():
     ap.add_argument("--logs", default="logs")
     ap.add_argument("--out", default="logs/wsum")
     ap.add_argument(
+        "--prefix",
+        default="wsum",
+        help="log-dir prefix; use wsuma for the Atari half of the grid",
+    )
+    ap.add_argument(
         "--complete-seeds-only",
         action="store_true",
         help="keep only seeds for which EVERY arm of a cell has finished, so all "
@@ -142,7 +152,7 @@ def main():
     args = ap.parse_args()
 
     root = Path(args.logs)
-    runs = load_runs(root)
+    runs = load_runs(root, args.prefix)
     if not runs:
         raise SystemExit(f"no wsum runs found under {root}")
 
