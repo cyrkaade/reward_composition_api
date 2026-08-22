@@ -20,6 +20,25 @@ steps rather than taken on trust (2026-08-22):
                     lost against 56 overall, which is the miss signature
   Pong      ram[14] +1 on all 75 agent points and never otherwise
             ram[13] +1 on all 2751 conceded points and never otherwise
+
+PCC against the true reward, per fragment of 25, 40k steps, seeds 0-2, all
+candidates stepped on the SAME trajectory so the comparison is paired.  Note
+``rcomp partiality`` cannot produce these: it hands the partial the pixel
+observation, and the RAM substitution lives in the training wrapper.
+
+  Breakout  rbo_bricks 0.966   track05 0.808  track10 0.582  track25 0.276
+                               track50 0.140
+  Pong      rpong_score 0.226  rally005 0.252  track05 0.155  track10 0.114
+                               track25 0.085  track50 0.074
+
+These are RANDOM-POLICY numbers and both ends are distorted by that, in
+opposite directions.  Breakout's 0.966 is an overestimate: a random paddle only
+ever reaches the 1-point rows, so counting bricks and scoring coincide, while a
+trained agent breaks the 4- and 7-point rows where they diverge.  Pong's 0.226
+is an underestimate for the mirror reason: a random agent scored 75 points and
+conceded 2751, so a prior that rewards scoring and ignores conceding looks
+nearly constant next to a true reward that is almost always -1.  Treat them as
+a ranking within a game, not as a cross-game alignment scale.
 """
 
 from __future__ import annotations
