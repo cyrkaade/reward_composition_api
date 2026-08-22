@@ -24,7 +24,8 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from analyze_wsum import load_runs, split_arm  # noqa: E402
 
-CELLS = [("qbert", "Qbert"), ("mspacman", "MsPacman")]
+CELLS = [(c, t) for c, t in [("qbert", "Qbert"), ("mspacman", "MsPacman"),
+                             ("breakout", "Breakout"), ("pong", "Pong")]]
 ARMS = ["true", "vanilla", "naive", "ws020", "ws040", "ws060", "ws080"]
 LABEL = {
     "true": "true reward", "vanilla": "vanilla RLHF", "naive": "naive (partial+model)",

@@ -7,8 +7,19 @@ RAM snapshots through AtariSuite's private partial-reward path and never inspect
 
 RAM addresses follow the AtariARI annotations already used by
 ``atari_ram_screen.py``.  Every candidate contains direct task progress: pellets
-for MsPacman, cube-color changes for Qbert, and the agent's score for Pong.  The
-screen therefore excludes motion-only and rally-only proxies.
+for MsPacman, cube-color changes for Qbert, the agent's score for Pong, and the
+brick counter for Breakout.  The screen therefore excludes motion-only and
+rally-only proxies.
+
+The Breakout and Pong addresses were verified against 60k-120k random-policy
+steps rather than taken on trust (2026-08-22):
+
+  Breakout  ram[77] +1 on every scoring step, corr(delta, reward) = 1.000
+            ram[72] paddle: +5.8 mean delta on RIGHT, -6.4 on LEFT
+            ram[99] ball x: |paddle - ball| is 80 in the step before a life is
+                    lost against 56 overall, which is the miss signature
+  Pong      ram[14] +1 on all 75 agent points and never otherwise
+            ram[13] +1 on all 2751 conceded points and never otherwise
 """
 
 from __future__ import annotations
@@ -91,6 +102,40 @@ class QbertReasonableRamPartial:
         }
 
 
+class BreakoutReasonableRamPartial:
+    """Count bricks, optionally reward getting the paddle under the ball.
+
+    The true reward pays 1, 4 or 7 per brick depending on how high the row is;
+    ``ram[77]`` counts every brick as 1.  That is precisely what makes this
+    partial partial -- it knows a brick fell, not what the brick was worth.
+    Measured over 60k random steps the env paid rewards from {0, 1, 4} while the
+    counter moved by exactly 1 each time.
+    """
+
+    component_keys = ("brick_progress", "tracking_progress")
+
+    def __init__(self, *, tracking_weight: float = 0.0):
+        self.tracking_weight = float(tracking_weight)
+
+    def reset(self, info: dict | None = None) -> None:
+        return None
+
+    def step(self, obs, action, next_obs, true_reward, terminated, truncated, info):
+        previous, current = _ram(obs), _ram(next_obs)
+        # ram[77] restarts at 0 on a new screen and on a lost life, so a large
+        # or negative jump is bookkeeping rather than progress.  Only forward
+        # steps of a plausible size count, the same guard MsPacman's dots use.
+        brick_delta = int(current[77]) - int(previous[77])
+        bricks = float(brick_delta if 0 < brick_delta <= 3 else 0)
+        old_gap = abs(int(previous[72]) - int(previous[99]))
+        gap = abs(int(current[72]) - int(current[99]))
+        tracking = self.tracking_weight * float(np.clip((old_gap - gap) / 8.0, -1.0, 1.0))
+        return {
+            "partial": float(bricks + tracking),
+            "components": {"brick_progress": bricks, "tracking_progress": tracking},
+        }
+
+
 class PongReasonableRamPartial:
     component_keys = ("score_progress", "tracking_progress", "rally_bonus")
 
@@ -148,6 +193,14 @@ _add_family("rqb", "ALE/Qbert-v5", QbertReasonableRamPartial, {
     "visit20": {"visit_weight": 0.20},
     "visit40": {"visit_weight": 0.40},
     "visit75": {"visit_weight": 0.75},
+})
+
+_add_family("rbo", "ALE/Breakout-v5", BreakoutReasonableRamPartial, {
+    "bricks": {},
+    "track05": {"tracking_weight": 0.05},
+    "track10": {"tracking_weight": 0.10},
+    "track25": {"tracking_weight": 0.25},
+    "track50": {"tracking_weight": 0.50},
 })
 
 _add_family("rpong", "ALE/Pong-v5", PongReasonableRamPartial, {
