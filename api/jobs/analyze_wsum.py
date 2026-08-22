@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 CELLS = ["ll", "ant", "hopper", "reacher", "bipedal", "pusher", "swimmer", "walker",
-         "mspacman", "qbert", "breakout", "pong"]
+         "mspacman", "qbert", "breakout", "breakoutd", "pong", "pongd"]
 CELL_TITLES = {
     "ll": "LunarLander-v3",
     "ant": "Ant-v5",
@@ -31,8 +31,10 @@ CELL_TITLES = {
     "walker": "Walker2d-v5",
     "mspacman": "MsPacman",
     "qbert": "Qbert",
-    "breakout": "Breakout",
-    "pong": "Pong",
+    "breakout": "Breakout (sparse prior)",
+    "breakoutd": "Breakout (dense prior)",
+    "pong": "Pong (sparse prior)",
+    "pongd": "Pong (dense prior)",
 }
 ALPHAS = ["020", "040", "050", "060", "080"]
 ALPHA_LABEL = {

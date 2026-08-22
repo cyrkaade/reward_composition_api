@@ -22,10 +22,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from analyze_wsum import load_runs, split_arm  # noqa: E402
+from analyze_wsum import CELL_TITLES, load_runs, split_arm  # noqa: E402
 
-CELLS = [(c, t) for c, t in [("qbert", "Qbert"), ("mspacman", "MsPacman"),
-                             ("breakout", "Breakout"), ("pong", "Pong")]]
+# Preferred display order; only the cells actually present in the logs are
+# drawn, so this handles the first Atari pair, the second, or all of them.
+CELL_ORDER = ["qbert", "mspacman", "breakout", "breakoutd", "pong", "pongd"]
 ARMS = ["true", "vanilla", "naive", "ws020", "ws040", "ws060", "ws080"]
 LABEL = {
     "true": "true reward", "vanilla": "vanilla RLHF", "naive": "naive (partial+model)",
@@ -58,14 +59,20 @@ def main():
 
     runs = load_runs(Path(args.logs), "wsuma")
     grouped = {}
+    present = set()
     for r in runs:
         base, budget = split_arm(r["arm"])
         grouped.setdefault((r["cell"], budget, base), []).append(r)
+        present.add(r["cell"])
+    cells = [(c, CELL_TITLES.get(c, c)) for c in CELL_ORDER if c in present]
+    if not cells:
+        raise SystemExit(f"no Atari cells found under {args.logs}")
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 9),
+    fig, axes = plt.subplots(len(cells), 3, figsize=(18, 4.5 * len(cells)),
+                             squeeze=False,
                              gridspec_kw={"width_ratios": [1, 1, 0.85]})
 
-    for row, (cell, title) in enumerate(CELLS):
+    for row, (cell, title) in enumerate(cells):
         for col, budget in enumerate(BUDGETS):
             ax = axes[row][col]
             for arm in ARMS:

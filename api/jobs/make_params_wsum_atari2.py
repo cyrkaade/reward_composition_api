@@ -14,12 +14,27 @@ Row format:  CELL ARM SEED PARTIAL BUDGET ALPHA
 import os
 from pathlib import Path
 
-# Priors chosen by the PCC screen in the module docstring of
-# partials/reasonable_atari_partials.py; both are pure task progress with no
-# shaping extras, which is also what MsPacman's rmsp_pellets is.
+# Two priors per game, chosen to vary the one property that separated Qbert
+# (big win) from MsPacman (null): how often the prior fires relative to the true
+# reward.  Alignment alone does not explain the split -- Qbert's rqb_tiles has
+# the same PCC as the rqb_visit02 the grid used (0.68 vs 0.67) but only 1.0x the
+# true reward's fragment coverage, while visit02 has 2.8x.
+#
+# Measured per fragment of 25 over 60k random steps (seeds 0-2):
+#
+#   cell        prior          PCC    fires vs true reward
+#   breakout    rbo_bricks     0.98   1.00x   <- aligned but adds no coverage
+#   breakoutd   rbo_track05    0.81   4.88x   <- Qbert's winning profile
+#   pong        rpong_score    0.38   0.03x   <- silent on 98.4% of fragments
+#   pongd       rpong_track05  0.27   1.71x
+#
+# Running both per game turns "will the weighted sum win here" into "does prior
+# density predict whether it wins", which is answerable either way.
 CELLS = {
     "breakout": "reasonable_atari_partials:rbo_bricks",
+    "breakoutd": "reasonable_atari_partials:rbo_track05",
     "pong": "reasonable_atari_partials:rpong_score",
+    "pongd": "reasonable_atari_partials:rpong_track05",
 }
 
 BUDGETS = (2800, 5600)

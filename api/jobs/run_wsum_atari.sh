@@ -49,8 +49,8 @@ fi
 case "$CELL" in
   mspacman) SUITE=atari; ENV=ALE/MsPacman-v5 ;;
   qbert)    SUITE=atari; ENV=ALE/Qbert-v5 ;;
-  breakout) SUITE=atari; ENV=ALE/Breakout-v5 ;;
-  pong)     SUITE=atari; ENV=ALE/Pong-v5 ;;
+  breakout|breakoutd) SUITE=atari; ENV=ALE/Breakout-v5 ;;
+  pong|pongd)         SUITE=atari; ENV=ALE/Pong-v5 ;;
   *) echo "unknown cell: $CELL" >&2; exit 2 ;;
 esac
 
