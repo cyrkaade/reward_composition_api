@@ -41,6 +41,14 @@ BUDGETS = (2800, 5600)
 ALPHAS = (0.20, 0.40, 0.60, 0.80)
 SEEDS = range(int(os.environ.get("SEEDS", "5")))
 
+# ONLY filters to a subset of cells and OUT names the file, so half the grid can
+# be submitted as its own job while the other half is already in the queue.
+# Rewriting a params file that a running array still depends on breaks it two
+# ways: EXPECTED_ROWS is fixed at submit time, and task N is hard-wired to rows
+# (N-1)*PER_TASK+1 .. N*PER_TASK of whatever the file says when the task starts.
+ONLY = [c for c in os.environ.get("ONLY", "").split(",") if c]
+OUT = os.environ.get("OUT", "params_wsum_atari2.txt")
+
 
 def arms():
     """The 13 arms per cell: true, then vanilla/naive/4 alphas at each budget."""
@@ -53,19 +61,22 @@ def arms():
 
 
 def main() -> None:
+    cells = {c: p for c, p in CELLS.items() if not ONLY or c in ONLY}
+    if not cells:
+        raise SystemExit(f"ONLY={ONLY} matched no cell in {sorted(CELLS)}")
     rows = []
     for seed in SEEDS:  # seed-major: a truncated run still gives whole seed layers
-        for cell, partial in CELLS.items():
+        for cell, partial in cells.items():
             for arm, budget, alpha in arms():
                 reference = "-" if arm == "true" else partial
                 rows.append(f"{cell} {arm} {seed} {reference} {budget} {alpha:.2f}")
 
-    out = Path(__file__).with_name("params_wsum_atari2.txt")
+    out = Path(__file__).with_name(OUT)
     out.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
     per_seed = len(rows) // len(SEEDS)
     print(f"wrote {out} with {len(rows)} rows ({per_seed} per seed layer)")
-    print(f"  cells={len(CELLS)} arms={per_seed // len(CELLS)} seeds={len(SEEDS)}")
+    print(f"  cells={sorted(cells)} arms={per_seed // len(cells)} seeds={len(SEEDS)}")
     print(f"  first row: {rows[0]}")
     print(f"  row {per_seed + 1} (start of seed 1): {rows[per_seed]}")
 
