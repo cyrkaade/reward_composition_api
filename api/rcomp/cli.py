@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         "validate-partial": _handle_validate_partial,
         "partiality": _handle_partiality,
         "plot-partiality": _handle_plot_partiality,
+        "starc": _handle_starc,
     }
     try:
         return handlers[args.command](args)
@@ -108,6 +109,34 @@ def build_parser() -> argparse.ArgumentParser:
     partiality_plot_parser.add_argument("--output", default=str(Path("logs") / "partiality" / "partiality_grid.png"))
     partiality_plot_parser.add_argument("--env-id", default=None)
     partiality_plot_parser.add_argument("--title", default="Partiality vs RLHF queries")
+
+    starc_parser = subparsers.add_parser(
+        "starc",
+        help="Estimate approximate STARC alignment for a LunarLander partial",
+    )
+    starc_parser.add_argument("--suite", choices=SUITE_NAMES, default="box2d")
+    starc_parser.add_argument("--env-id", default="LunarLander-v3")
+    starc_parser.add_argument("--partial", required=True)
+    starc_parser.add_argument("--timesteps", type=int, default=100_000)
+    starc_parser.add_argument("--gamma", type=float, default=0.99)
+    starc_parser.add_argument("--seed", type=int, default=0)
+    starc_parser.add_argument(
+        "--policy",
+        choices=["random", "mix"],
+        default="mix",
+        help="Fixed reference policy; mix chooses the LunarLander heuristic 90%% of the time",
+    )
+    starc_parser.add_argument("--value-features", type=int, default=512)
+    starc_parser.add_argument(
+        "--canonicalisation",
+        choices=["minimal", "val"],
+        default="minimal",
+        help="minimal solves directly for the best-cancelling potential (default); "
+             "val regresses Monte-Carlo returns, which removes shaping far less well",
+    )
+    starc_parser.add_argument("--bootstrap-samples", type=int, default=300)
+    starc_parser.add_argument("--output", default=None)
+    starc_parser.add_argument("--no-save", action="store_true")
 
     return parser
 
@@ -282,6 +311,30 @@ def _handle_partiality(args) -> int:
         output_path = save_partiality_result(metrics, args.output)
         print(f"saved partiality result to {output_path}", file=sys.stderr)
     print(partiality_json(metrics))
+    return 0
+
+
+def _handle_starc(args) -> int:
+    from .starc import StarcConfig, estimate_starc, save_starc_result, starc_json
+
+    metrics = estimate_starc(
+        StarcConfig(
+            suite=args.suite,
+            env_id=args.env_id,
+            partial=args.partial,
+            timesteps=args.timesteps,
+            gamma=args.gamma,
+            seed=args.seed,
+            policy=args.policy,
+            value_features=args.value_features,
+            bootstrap_samples=args.bootstrap_samples,
+            canonicalisation=args.canonicalisation,
+        )
+    )
+    if not args.no_save:
+        output_path = save_starc_result(metrics, args.output)
+        print(f"saved STARC result to {output_path}", file=sys.stderr)
+    print(starc_json(metrics))
     return 0
 
 

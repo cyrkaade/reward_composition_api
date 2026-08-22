@@ -120,9 +120,36 @@ rcomp validate-partial --suite gym --env-id CartPole-v1 --partial example_cartpo
 # Estimate how much a partial matches true reward (random-policy fragments)
 rcomp partiality --suite gym --env-id CartPole-v1 --partial example_cartpole --timesteps 20000
 
+# Estimate approximate STARC alignment for a LunarLander partial
+rcomp starc --partial lunar_lander_alignment:lla_a75 --timesteps 100000
+
 # Plot final reward by partiality x query budget across finished runs
 rcomp plot-partiality --runs-root logs --partiality-root logs/partiality
 ```
+
+The STARC command is an isolated diagnostic: it collects fresh LunarLander
+rollouts and does not change experiment training or reward composition. It
+reports a distance from 0 (equivalent) to 2 (opposite), plus a display-friendly
+alignment from 1 to 0. The result is an approximation for *ranking* partials
+within LunarLander, not an exact percentage or a replacement for true-reward
+evaluation — the STARC paper reports the same caveat for its own sampled
+estimates. The 100,000-step default is intentional: shorter runs make the
+estimate noticeably noisier, especially for low-alignment partials.
+
+`--canonicalisation minimal` (the default) solves directly for the potential
+that best cancels the reward, which removes representable potential shaping
+exactly. `--canonicalisation val` is the older path that regresses Monte-Carlo
+returns; it removes shaping far less well (a policy-equivalent shaped reward
+scored 0.72 instead of 1.0) and its numbers swing with `--value-features`, so
+prefer `minimal` unless reproducing an earlier measurement.
+
+The calibrated LunarLander STARC grid partials are
+`lunar_lander_starc_alignment:lls_a20`, `lls_a40`, `lls_a60`, `lls_a80`, and
+`lls_a100`, targeting alignment 0.2 / 0.4 / 0.6 / 0.8 / 1.0. Calibrated on
+seeds 0-4 and measured on held-out seeds 5-9 at 0.207 / 0.414 / 0.614 / 0.807 /
+1.000. Only the terminal weight varies between rungs, because LunarLander's
+shaping term *is* potential shaping and canonicalisation deletes it; see the
+module docstring for what that means for the low rungs.
 
 `rcomp train --help` lists every knob; the flags are generated from
 `rcomp.config.ExperimentConfig`, so the dataclass is the single source of
